@@ -97,10 +97,9 @@ Other:
 
 Any GGUF model with LLaMA-style architecture works, including:
 
-- LLaMA / LLaMA 2 / LLaMA 3
-- Mistral / Mixtral
-- Qwen / Qwen2
-- TinyLlama
+- Deepseek/ Deepseek v3.1
+- Qwen / Qwen3/ Qwen3.5
+- Minimax / Minimax2.5
 - And other LLaMA-compatible models
 
 Download models from [Hugging Face](https://huggingface.co/models?search=gguf) in GGUF format.
