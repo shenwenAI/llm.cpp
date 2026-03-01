@@ -1,7 +1,7 @@
 # llm.cpp
 
 A lightweight C++ LLM inference engine, similar to [llama.cpp](https://github.com/ggerganov/llama.cpp). Loads GGUF model files and runs text generation on **CPU** (with OpenMP) or **GPU** (with CUDA).
-
+You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
 ## Features
 
 - **GGUF model loading** – parses the standard GGUF format used by the llama.cpp ecosystem
