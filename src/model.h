@@ -138,6 +138,10 @@ public:
             fprintf(stderr, "Context length capped: %d -> %d\n",
                     config.max_seq_len, context_override);
             config.max_seq_len = context_override;
+        } else if (context_override == 0 && config.max_seq_len > 8192) {
+            fprintf(stderr, "Context length auto-capped: %d -> %d (use -c to override)\n",
+                    config.max_seq_len, 4096);
+            config.max_seq_len = 4096;
         }
 
         // Load tokenizer

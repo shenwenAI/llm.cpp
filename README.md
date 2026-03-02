@@ -76,6 +76,7 @@ Required:
 Generation:
   -p, --prompt <text>      Input prompt (default: "Hello")
   -n, --max-tokens <N>     Max tokens to generate (default: 256)
+  -c, --context <N>        Max context length (default: model's value, auto-capped to 4096)
   -t, --temperature <F>    Sampling temperature (default: 0.8)
   --top-k <N>              Top-K sampling (default: 40)
   --top-p <F>              Top-P nucleus sampling (default: 0.9)
@@ -89,9 +90,16 @@ Backend:
 
 Other:
   -i, --interactive        Interactive chat mode
+  --no-chat-template       Disable automatic chat template
   --info                   Show model info and exit
   -h, --help               Show help
 ```
+
+### Chat Template
+
+For chat models (e.g., Qwen3, Qwen2) that include `<|im_start|>` and `<|im_end|>` tokens,
+a ChatML-style template is automatically applied to prompts. This wraps your input in the
+proper format so the model generates coherent responses. Use `--no-chat-template` to disable.
 
 ## Compatible Models
 

@@ -22,6 +22,7 @@ struct RunConfig {
     SamplerConfig sampler;
     bool interactive = false;
     bool show_info = false;
+    bool no_chat_template = false;  // disable auto chat template
 };
 
 static void print_usage(const char* prog) {
@@ -50,6 +51,7 @@ static void print_usage(const char* prog) {
         "\n"
         "Other:\n"
         "  -i, --interactive        Interactive chat mode\n"
+        "  --no-chat-template       Disable automatic chat template\n"
         "  --info                   Show model info and exit\n"
         "  -h, --help               Show this help\n"
         "\n"
@@ -89,6 +91,8 @@ static bool parse_args(int argc, char** argv, RunConfig& cfg) {
             cfg.num_threads = atoi(argv[++i]);
         } else if (arg == "-i" || arg == "--interactive") {
             cfg.interactive = true;
+        } else if (arg == "--no-chat-template") {
+            cfg.no_chat_template = true;
         } else if (arg == "--info") {
             cfg.show_info = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -107,10 +111,36 @@ static bool parse_args(int argc, char** argv, RunConfig& cfg) {
     return true;
 }
 
+// Detect if model supports ChatML format and apply template
+static bool has_chatml_support(const Model& model) {
+    return model.tokenizer.token_to_id.count("<|im_start|>") &&
+           model.tokenizer.token_to_id.count("<|im_end|>");
+}
+
+static std::string apply_chat_template(const Model& model, const std::string& prompt) {
+    if (has_chatml_support(model)) {
+        return "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+               "<|im_start|>user\n" + prompt + "<|im_end|>\n"
+               "<|im_start|>assistant\n";
+    }
+    return prompt;
+}
+
 static void generate(Model& model, Sampler& sampler, const std::string& prompt,
-                     int max_tokens) {
-    // Encode prompt
-    std::vector<int> tokens = model.tokenizer.encode(prompt, true);
+                     int max_tokens, bool use_chat_template = false) {
+    // Optionally apply chat template
+    std::string final_prompt = prompt;
+    bool template_applied = false;
+    if (use_chat_template) {
+        final_prompt = apply_chat_template(model, prompt);
+        template_applied = (final_prompt != prompt);
+        if (template_applied) {
+            fprintf(stderr, "Chat template applied (ChatML format)\n");
+        }
+    }
+
+    // Encode prompt (skip BOS when chat template provides its own start tokens)
+    std::vector<int> tokens = model.tokenizer.encode(final_prompt, !template_applied);
 
     fprintf(stderr, "Prompt tokens: %zu\n", tokens.size());
     fprintf(stderr, "Generating up to %d tokens...\n\n", max_tokens);
@@ -146,7 +176,7 @@ static void generate(Model& model, Sampler& sampler, const std::string& prompt,
         next_token = sampler.sample(logits_ptr, model.config.vocab_size, recent_tokens);
 
         // Check for EOS
-        if (next_token == model.tokenizer.eos_token_id) {
+        if (model.tokenizer.is_eos_token(next_token)) {
             break;
         }
 
@@ -185,7 +215,8 @@ static void generate(Model& model, Sampler& sampler, const std::string& prompt,
     fprintf(stderr, "Total time:        %.2f s\n", total_time);
 }
 
-static void interactive_mode(Model& model, Sampler& sampler, int max_tokens) {
+static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
+                            bool use_chat_template = false) {
     fprintf(stderr, "Interactive mode. Type your prompt and press Enter.\n");
     fprintf(stderr, "Type 'quit' or 'exit' to stop.\n\n");
 
@@ -208,7 +239,7 @@ static void interactive_mode(Model& model, Sampler& sampler, int max_tokens) {
         // Reset KV cache for new conversation
         model.kv_cache.clear();
 
-        generate(model, sampler, line, max_tokens);
+        generate(model, sampler, line, max_tokens, use_chat_template);
         printf("\n");
     }
 }
@@ -255,10 +286,16 @@ int main(int argc, char** argv) {
     // Create sampler
     Sampler sampler(cfg.sampler);
 
+    // Auto-detect chat template support
+    bool use_chat_template = !cfg.no_chat_template && has_chatml_support(model);
+    if (use_chat_template) {
+        fprintf(stderr, "Chat template: auto-detected (ChatML)\n");
+    }
+
     if (cfg.interactive) {
-        interactive_mode(model, sampler, cfg.max_tokens);
+        interactive_mode(model, sampler, cfg.max_tokens, use_chat_template);
     } else {
-        generate(model, sampler, cfg.prompt, cfg.max_tokens);
+        generate(model, sampler, cfg.prompt, cfg.max_tokens, use_chat_template);
     }
 
     return 0;

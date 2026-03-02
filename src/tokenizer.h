@@ -18,6 +18,9 @@ public:
     int eos_token_id = 2;
     int pad_token_id = -1;
 
+    // Multiple EOS/stop token IDs (for chat models with <|im_end|>, <|endoftext|>, etc.)
+    std::vector<int> eos_token_ids;
+
     std::vector<std::string> id_to_token;
     std::vector<float> token_scores;
     std::unordered_map<std::string, int> token_to_id;
@@ -37,6 +40,9 @@ public:
     // GPT-2 byte-to-unicode mapping (for gpt2-style tokenizers like Qwen)
     std::unordered_map<char32_t, uint8_t> unicode_to_byte;
     std::unordered_map<uint8_t, std::string> byte_to_unicode;
+
+    // Added/special tokens that should be matched as-is (not BPE-encoded)
+    std::vector<std::string> added_tokens;  // sorted by length descending
 
     bool load_from_gguf(const GGUFFile& gguf) {
         // Read vocabulary tokens
@@ -86,6 +92,9 @@ public:
         eos_token_id = static_cast<int>(gguf.get_i64("tokenizer.ggml.eos_token_id", 2));
         pad_token_id = static_cast<int>(gguf.get_i64("tokenizer.ggml.padding_token_id", -1));
 
+        // Build list of EOS/stop token IDs
+        eos_token_ids.push_back(eos_token_id);
+
         // Read tokenizer model type
         tokenizer_model = gguf.get_str("tokenizer.ggml.model", "");
 
@@ -94,9 +103,56 @@ public:
             init_gpt2_byte_mapping();
         }
 
+        // Detect added/special tokens from token_type metadata or by pattern
+        auto types_it = gguf.metadata.find("tokenizer.ggml.token_type");
+        if (types_it != gguf.metadata.end()) {
+            for (int i = 0; i < vocab_size && i < static_cast<int>(types_it->second.arr.size()); i++) {
+                int ttype = static_cast<int>(types_it->second.arr[i].to_int());
+                // token_type: 3=control, 4=user_defined - these are special tokens
+                if (ttype == 3 || ttype == 4) {
+                    const std::string& tok = id_to_token[i];
+                    if (!tok.empty()) {
+                        added_tokens.push_back(tok);
+                    }
+                    // Add additional EOS candidates: <|im_end|>, <|endoftext|>, <|end|>
+                    if (i != eos_token_id &&
+                        (tok == "<|im_end|>" || tok == "<|endoftext|>" || tok == "<|end|>")) {
+                        eos_token_ids.push_back(i);
+                    }
+                }
+            }
+        } else {
+            // Fallback: detect special tokens by pattern (e.g., <|...|>)
+            for (int i = 0; i < vocab_size; i++) {
+                const std::string& tok = id_to_token[i];
+                if (tok.size() >= 4 && tok.substr(0, 2) == "<|" &&
+                    tok.substr(tok.size() - 2) == "|>") {
+                    added_tokens.push_back(tok);
+                    if (i != eos_token_id &&
+                        (tok == "<|im_end|>" || tok == "<|endoftext|>" || tok == "<|end|>")) {
+                        eos_token_ids.push_back(i);
+                    }
+                }
+            }
+        }
+
+        // Sort added tokens by length descending (longest match first)
+        std::sort(added_tokens.begin(), added_tokens.end(),
+                  [](const std::string& a, const std::string& b) {
+                      return a.size() > b.size();
+                  });
+
         fprintf(stderr, "Tokenizer: vocab_size=%d, bos=%d, eos=%d\n",
                 vocab_size, bos_token_id, eos_token_id);
         return true;
+    }
+
+    // Check if a token ID is an EOS/stop token
+    bool is_eos_token(int token_id) const {
+        for (int eos : eos_token_ids) {
+            if (token_id == eos) return true;
+        }
+        return false;
     }
 
     // Simple encode: byte-level BPE encoding
@@ -309,6 +365,60 @@ private:
 
     // GPT-2 style BPE encoding with byte-to-unicode mapping
     void bpe_encode_gpt2(const std::string& text, std::vector<int>& tokens) const {
+        // First, split text around added/special tokens (e.g., <|im_start|>)
+        std::vector<std::pair<std::string, bool>> segments; // (text, is_special)
+        split_special_tokens(text, segments);
+
+        for (const auto& seg : segments) {
+            if (seg.second) {
+                // Special token: add directly by ID
+                auto it = token_to_id.find(seg.first);
+                if (it != token_to_id.end()) {
+                    tokens.push_back(it->second);
+                }
+            } else {
+                // Regular text: BPE encode
+                bpe_encode_gpt2_segment(seg.first, tokens);
+            }
+        }
+    }
+
+    // Split text around special/added tokens
+    void split_special_tokens(const std::string& text,
+                              std::vector<std::pair<std::string, bool>>& segments) const {
+        if (added_tokens.empty()) {
+            segments.push_back({text, false});
+            return;
+        }
+
+        size_t pos = 0;
+        while (pos < text.size()) {
+            // Try to match any added token at current position (longest first)
+            bool found = false;
+            for (const auto& tok : added_tokens) {
+                if (pos + tok.size() <= text.size() &&
+                    text.compare(pos, tok.size(), tok) == 0) {
+                    segments.push_back({tok, true});
+                    pos += tok.size();
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Add to current regular text segment
+                if (segments.empty() || segments.back().second) {
+                    segments.push_back({"", false});
+                }
+                segments.back().first += text[pos];
+                pos++;
+            }
+        }
+    }
+
+    // BPE encode a regular (non-special) text segment
+    void bpe_encode_gpt2_segment(const std::string& text, std::vector<int>& tokens) const {
+        if (text.empty()) return;
+
         // Pre-tokenize: split at whitespace boundaries, keeping space
         // attached to the beginning of the following word
         std::vector<std::string> chunks;
