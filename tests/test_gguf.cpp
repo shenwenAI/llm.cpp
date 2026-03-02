@@ -873,6 +873,60 @@ void test_special_token_encode() {
     PASS();
 }
 
+// Verify that a newline is always its own BPE chunk and is never merged into
+// the following text.  In Qwen's tiktoken pre-tokenisation, \n matches
+// \s*[\r\n]+ as a separate unit; if we instead let it attach to the next
+// word (the old bug), a spurious low-rank merge of the encoded newline
+// symbol with the first symbol of the following word would fire and produce
+// a completely wrong token — exactly the garbled-Chinese bug reported on
+// Windows.
+void test_gpt2_newline_chunking() {
+    TEST(gpt2_newline_chunking);
+
+    Tokenizer tok;
+    tok.tokenizer_model = "gpt2";
+    tok.init_gpt2_byte_mapping();
+
+    // '\n' (byte 0x0A) is NOT in the safe range; it maps to codepoint 266
+    // (0x10A = Ċ), whose UTF-8 encoding is "\xC4\x8A".
+    std::string nl_enc = std::string("\xC4\x8A"); // GPT-2 encoded '\n'
+
+    std::vector<std::string> vocab_tokens = {
+        "h", "e", "l", "o",               // 0-3: single ASCII letters
+        nl_enc,                            // 4: encoded '\n'  (Ċ)
+        nl_enc + "h",                      // 5: wrong merged token "Ċh"
+        "he", "hel", "hell", "hello",      // 6-9: BPE-merged forms of "hello"
+    };
+
+    tok.vocab_size = static_cast<int>(vocab_tokens.size());
+    tok.id_to_token = vocab_tokens;
+    for (int i = 0; i < tok.vocab_size; i++) {
+        tok.token_to_id[tok.id_to_token[i]] = i;
+    }
+    tok.bos_token_id = -1;
+
+    // Give the (newline-enc + 'h') pair rank 0 — the highest BPE priority.
+    // If '\n' and "hello" are ever in the same chunk this merge fires first,
+    // producing the wrong token 5 ("Ċh") and leaving the rest unmerged.
+    tok.merge_ranks[nl_enc + " h"] = 0; // rank 0 = highest priority
+    tok.merge_ranks["h e"]         = 1;
+    tok.merge_ranks["he l"]        = 2;
+    tok.merge_ranks["hel l"]       = 3;
+    tok.merge_ranks["hell o"]      = 4;
+    tok.merges.push_back({"h", "e", 1});
+
+    // "\nhello" must encode as [nl_token(4), hello_token(9)].
+    // With the old bug '\n' and "hello" share a chunk, "Ċ h" merges at
+    // rank 0 and the result starts with wrong token 5 instead of 4.
+    auto tokens = tok.encode("\nhello", false);
+
+    ASSERT_EQ(static_cast<int>(tokens.size()), 2);
+    ASSERT_EQ(tokens[0], 4); // encoded '\n' → token 4
+    ASSERT_EQ(tokens[1], 9); // "hello" fully merged → token 9
+
+    PASS();
+}
+
 // ---- Run all tests ----
 
 int main() {
@@ -922,6 +976,7 @@ int main() {
     test_eos_token_ids();
     test_context_auto_cap();
     test_special_token_encode();
+    test_gpt2_newline_chunking();
 
     fprintf(stderr, "\n=== Results: %d passed, %d failed ===\n",
             tests_passed, tests_failed);
