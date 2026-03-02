@@ -204,7 +204,8 @@ inline void cpu_silu_elementwise_mul(float* out, const float* gate, const float*
     }
 }
 
-// Rotary positional embeddings (RoPE)
+// Rotary positional embeddings (RoPE) - interleaved style (LLaMA)
+// Pairs consecutive elements: (0,1), (2,3), ...
 // q_dim and k_dim may differ when using GQA (grouped query attention)
 inline void cpu_rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
     // Apply to query
@@ -231,6 +232,44 @@ inline void cpu_rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int
         float k0 = k[i], k1 = k[i + 1];
         k[i]     = k0 * cos_val - k1 * sin_val;
         k[i + 1] = k0 * sin_val + k1 * cos_val;
+    }
+}
+
+// Rotary positional embeddings (RoPE) - neox/halved style (Qwen, GPT-NeoX)
+// Pairs elements at distance head_dim/2: (0, head_dim/2), (1, head_dim/2+1), ...
+inline void cpu_rope_neox(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
+    int half_dim = head_dim / 2;
+
+    // Apply to query
+    int q_heads = q_dim / head_dim;
+    for (int h = 0; h < q_heads; h++) {
+        float* qh = q + h * head_dim;
+        for (int i = 0; i < half_dim; i++) {
+            float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / head_dim);
+            float angle = pos * freq;
+            float cos_val = cosf(angle);
+            float sin_val = sinf(angle);
+
+            float q0 = qh[i], q1 = qh[i + half_dim];
+            qh[i]            = q0 * cos_val - q1 * sin_val;
+            qh[i + half_dim] = q1 * cos_val + q0 * sin_val;
+        }
+    }
+
+    // Apply to key
+    int k_heads = k_dim / head_dim;
+    for (int h = 0; h < k_heads; h++) {
+        float* kh = k + h * head_dim;
+        for (int i = 0; i < half_dim; i++) {
+            float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / head_dim);
+            float angle = pos * freq;
+            float cos_val = cosf(angle);
+            float sin_val = sinf(angle);
+
+            float k0 = kh[i], k1 = kh[i + half_dim];
+            kh[i]            = k0 * cos_val - k1 * sin_val;
+            kh[i + half_dim] = k1 * cos_val + k0 * sin_val;
+        }
     }
 }
 
@@ -297,14 +336,18 @@ struct Compute {
         cpu_silu_elementwise_mul(out, gate, up, n);
     }
 
-    void rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
+    void rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta, bool neox = false) {
 #ifdef LLM_USE_CUDA
         if (backend == Backend::CUDA) {
             cuda_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
             return;
         }
 #endif
-        cpu_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
+        if (neox) {
+            cpu_rope_neox(q, k, q_dim, k_dim, head_dim, pos, theta);
+        } else {
+            cpu_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
+        }
     }
 
     void add(float* out, const float* a, const float* b, int n) {
