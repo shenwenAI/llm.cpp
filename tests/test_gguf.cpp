@@ -322,6 +322,48 @@ void test_cpu_rope_gqa() {
     PASS();
 }
 
+void test_cpu_rope_neox() {
+    TEST(cpu_rope_neox);
+
+    // Test neox-style RoPE at position 0: should be identity
+    float q[] = {1, 2, 3, 4};
+    float k[] = {5, 6, 7, 8};
+
+    cpu_rope_neox(q, k, 4, 4, 4, 0, 10000.0f);
+
+    ASSERT_NEAR(q[0], 1.0f, 1e-5f);
+    ASSERT_NEAR(q[1], 2.0f, 1e-5f);
+    ASSERT_NEAR(q[2], 3.0f, 1e-5f);
+    ASSERT_NEAR(q[3], 4.0f, 1e-5f);
+    ASSERT_NEAR(k[0], 5.0f, 1e-5f);
+    ASSERT_NEAR(k[1], 6.0f, 1e-5f);
+
+    // Test at position 1 with head_dim=4: pairs (0,2) and (1,3)
+    float q2[] = {1, 0, 0, 0};
+    float k2[] = {1, 0, 0, 0};
+    cpu_rope_neox(q2, k2, 4, 4, 4, 1, 10000.0f);
+
+    // Element 0 paired with element 2 (at distance head_dim/2=2)
+    // freq = 1/theta^(0/4) = 1, angle = 1*1 = 1
+    float freq0 = 1.0f / powf(10000.0f, 0.0f / 4.0f);
+    float angle0 = 1.0f * freq0;
+    ASSERT_NEAR(q2[0], cosf(angle0), 1e-5f);
+    ASSERT_NEAR(q2[2], sinf(angle0), 1e-5f);
+    ASSERT_NEAR(k2[0], cosf(angle0), 1e-5f);
+    ASSERT_NEAR(k2[2], sinf(angle0), 1e-5f);
+
+    // Test with GQA: q has more heads than k
+    float q3[] = {1, 0, 0, 0, 1, 0, 0, 0};
+    float k3[] = {1, 0, 0, 0};
+    cpu_rope_neox(q3, k3, 8, 4, 4, 1, 10000.0f);
+
+    // Both q heads should get the same rotation
+    ASSERT_NEAR(q3[0], cosf(angle0), 1e-5f);
+    ASSERT_NEAR(q3[4], cosf(angle0), 1e-5f);
+
+    PASS();
+}
+
 void test_qkv_bias_add() {
     TEST(qkv_bias_add);
 
@@ -462,6 +504,7 @@ int main() {
     test_cpu_add();
     test_cpu_rope();
     test_cpu_rope_gqa();
+    test_cpu_rope_neox();
     test_qkv_bias_add();
     test_qk_norm();
 

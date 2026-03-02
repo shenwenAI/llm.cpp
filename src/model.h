@@ -30,6 +30,7 @@ struct ModelConfig {
     int head_dim = 0;           // derived: hidden_size / num_heads
     int kv_dim = 0;             // derived: head_dim * num_kv_heads
     bool qkv_bias = false;      // Qwen3-style QKV bias
+    bool rope_neox = false;     // neox-style (halved) RoPE for Qwen models
 };
 
 // ---- Transformer weights ----
@@ -211,7 +212,7 @@ public:
             // Apply RoPE (separate Q and K dims for GQA correctness)
             compute.rope(q.data(), k.data(), num_heads * head_dim,
                          num_kv_heads * head_dim, head_dim,
-                         pos, config.rope_theta);
+                         pos, config.rope_theta, config.rope_neox);
 
             // Store K, V in cache
             memcpy(kv_cache.key(l, pos), k.data(), kv_dim * sizeof(float));
@@ -355,6 +356,11 @@ private:
 
         config.kv_dim = config.head_dim * config.num_kv_heads;
 
+        // Use neox-style (halved) RoPE for Qwen models
+        if (arch == "qwen2" || arch == "qwen3" || arch == "qwen2moe") {
+            config.rope_neox = true;
+        }
+
         // Get vocab size from tokenizer if not in model metadata
         if (config.vocab_size == 0) {
             auto it = gguf.metadata.find("tokenizer.ggml.tokens");
@@ -367,10 +373,13 @@ private:
     }
 
     // Load and dequantize a tensor from GGUF
-    float* load_tensor(const std::string& name, int64_t expected_elements = -1) {
+    float* load_tensor(const std::string& name, int64_t expected_elements = -1,
+                       bool optional = false) {
         auto it = gguf.tensors.find(name);
         if (it == gguf.tensors.end()) {
-            fprintf(stderr, "Warning: tensor '%s' not found\n", name.c_str());
+            if (!optional) {
+                fprintf(stderr, "Warning: tensor '%s' not found\n", name.c_str());
+            }
             return nullptr;
         }
 
@@ -407,7 +416,7 @@ private:
             static_cast<int64_t>(config.vocab_size) * dim);
         weights.output_norm = load_tensor("output_norm.weight", dim);
         weights.output = load_tensor("output.weight",
-            static_cast<int64_t>(config.vocab_size) * dim);
+            static_cast<int64_t>(config.vocab_size) * dim, true);
 
         // If output weights are not present, use token embeddings (weight tying)
         if (!weights.output) {
@@ -435,11 +444,11 @@ private:
 
             // Load QKV biases (optional, used by Qwen3-style models)
             weights.layers[l].bq = load_tensor(prefix + "attn_q.bias",
-                static_cast<int64_t>(n_heads) * head_dim);
+                static_cast<int64_t>(n_heads) * head_dim, true);
             weights.layers[l].bk = load_tensor(prefix + "attn_k.bias",
-                static_cast<int64_t>(kv_dim));
+                static_cast<int64_t>(kv_dim), true);
             weights.layers[l].bv = load_tensor(prefix + "attn_v.bias",
-                static_cast<int64_t>(kv_dim));
+                static_cast<int64_t>(kv_dim), true);
 
             if (l == 0 && weights.layers[l].bq) {
                 config.qkv_bias = true;
@@ -447,9 +456,9 @@ private:
 
             // Load QK-norm weights (optional, used by Qwen3-style models)
             weights.layers[l].attn_q_norm = load_tensor(prefix + "attn_q_norm.weight",
-                static_cast<int64_t>(head_dim));
+                static_cast<int64_t>(head_dim), true);
             weights.layers[l].attn_k_norm = load_tensor(prefix + "attn_k_norm.weight",
-                static_cast<int64_t>(head_dim));
+                static_cast<int64_t>(head_dim), true);
 
             weights.layers[l].ffn_norm = load_tensor(prefix + "ffn_norm.weight", dim);
             weights.layers[l].w_gate = load_tensor(prefix + "ffn_gate.weight",
