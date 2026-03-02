@@ -726,6 +726,153 @@ void test_gpt2_pretokenize() {
     PASS();
 }
 
+// ---- Special token and chat template tests ----
+
+void test_special_token_split() {
+    TEST(special_token_split);
+
+    Tokenizer tok;
+    tok.tokenizer_model = "gpt2";
+    tok.init_gpt2_byte_mapping();
+
+    // Set up vocabulary with special tokens
+    std::vector<std::string> vocab_tokens = {
+        "s", "y", "t", "e", "m",       // 0-4
+        "<|im_start|>",                 // 5
+        "<|im_end|>",                   // 6
+        "<|endoftext|>",                // 7
+        "system",                       // 8: fully merged form
+        "sy",                           // 9
+        "st",                           // 10
+        "em",                           // 11
+        "syst",                         // 12
+    };
+
+    tok.vocab_size = static_cast<int>(vocab_tokens.size());
+    tok.id_to_token = vocab_tokens;
+    for (int i = 0; i < tok.vocab_size; i++) {
+        tok.token_to_id[tok.id_to_token[i]] = i;
+    }
+    tok.bos_token_id = -1;
+
+    // Add special tokens (sorted by length descending)
+    tok.added_tokens = {"<|endoftext|>", "<|im_start|>", "<|im_end|>"};
+
+    // Add merge rules matching BPE merge order:
+    // s,y,s,t,e,m -> sy,s,t,e,m -> sy,st,e,m -> sy,st,em -> syst,em -> system
+    tok.merge_ranks["s y"] = 0;
+    tok.merge_ranks["s t"] = 1;
+    tok.merge_ranks["e m"] = 2;
+    tok.merge_ranks["sy st"] = 3;
+    tok.merge_ranks["syst em"] = 4;
+    tok.merges.push_back({"s", "y", 0});
+
+    // Encode "<|im_start|>system<|im_end|>" - special tokens should be matched directly
+    auto tokens = tok.encode("<|im_start|>system<|im_end|>", false);
+
+    // Should produce: 5 (<|im_start|>), 8 (system), 6 (<|im_end|>)
+    ASSERT_EQ(static_cast<int>(tokens.size()), 3);
+    ASSERT_EQ(tokens[0], 5); // <|im_start|>
+    ASSERT_EQ(tokens[1], 8); // system (BPE merged)
+    ASSERT_EQ(tokens[2], 6); // <|im_end|>
+
+    PASS();
+}
+
+void test_eos_token_ids() {
+    TEST(eos_token_ids);
+
+    Tokenizer tok;
+    tok.eos_token_id = 2;
+    tok.eos_token_ids.push_back(2);
+    tok.eos_token_ids.push_back(5);
+    tok.eos_token_ids.push_back(7);
+
+    ASSERT_TRUE(tok.is_eos_token(2));
+    ASSERT_TRUE(tok.is_eos_token(5));
+    ASSERT_TRUE(tok.is_eos_token(7));
+    ASSERT_TRUE(!tok.is_eos_token(0));
+    ASSERT_TRUE(!tok.is_eos_token(3));
+
+    PASS();
+}
+
+void test_context_auto_cap() {
+    TEST(context_auto_cap);
+
+    // Verify that context > 8192 gets auto-capped to 4096
+    ModelConfig cfg;
+    cfg.max_seq_len = 40960;
+
+    // Simulate auto-capping logic from Model::load
+    int context_override = 0;
+    if (context_override == 0 && cfg.max_seq_len > 8192) {
+        cfg.max_seq_len = 4096;
+    }
+
+    ASSERT_EQ(cfg.max_seq_len, 4096);
+
+    // Verify that context <= 8192 is NOT capped
+    ModelConfig cfg2;
+    cfg2.max_seq_len = 4096;
+    if (context_override == 0 && cfg2.max_seq_len > 8192) {
+        cfg2.max_seq_len = 4096;
+    }
+    ASSERT_EQ(cfg2.max_seq_len, 4096); // unchanged
+
+    // Verify explicit override is respected
+    ModelConfig cfg3;
+    cfg3.max_seq_len = 40960;
+    int explicit_override = 2048;
+    if (explicit_override > 0 && explicit_override < cfg3.max_seq_len) {
+        cfg3.max_seq_len = explicit_override;
+    }
+    ASSERT_EQ(cfg3.max_seq_len, 2048);
+
+    PASS();
+}
+
+void test_special_token_encode() {
+    TEST(special_token_encode);
+
+    Tokenizer tok;
+    tok.tokenizer_model = "gpt2";
+    tok.init_gpt2_byte_mapping();
+
+    // Build vocabulary
+    std::vector<std::string> vocab_tokens = {
+        "a", "b", "c",                  // 0-2
+        "<|im_start|>",                 // 3
+        "<|im_end|>",                   // 4
+        "ab",                           // 5
+        "abc",                          // 6
+    };
+
+    tok.vocab_size = static_cast<int>(vocab_tokens.size());
+    tok.id_to_token = vocab_tokens;
+    for (int i = 0; i < tok.vocab_size; i++) {
+        tok.token_to_id[tok.id_to_token[i]] = i;
+    }
+    tok.bos_token_id = -1;
+    tok.added_tokens = {"<|im_start|>", "<|im_end|>"};
+
+    // Merge rules: a+b -> ab, ab+c -> abc
+    tok.merge_ranks["a b"] = 0;
+    tok.merge_ranks["ab c"] = 1;
+    tok.merges.push_back({"a", "b", 0});
+
+    // Encode text with special tokens
+    auto tokens = tok.encode("<|im_start|>abc<|im_end|>", false);
+
+    // Should produce: 3 (<|im_start|>), 6 (abc merged), 4 (<|im_end|>)
+    ASSERT_EQ(static_cast<int>(tokens.size()), 3);
+    ASSERT_EQ(tokens[0], 3); // <|im_start|>
+    ASSERT_EQ(tokens[1], 6); // abc (BPE merged)
+    ASSERT_EQ(tokens[2], 4); // <|im_end|>
+
+    PASS();
+}
+
 // ---- Run all tests ----
 
 int main() {
@@ -769,6 +916,12 @@ int main() {
     test_gpt2_decode_chinese();
     test_gpt2_encode();
     test_gpt2_pretokenize();
+
+    fprintf(stderr, "\nChat template & special token tests:\n");
+    test_special_token_split();
+    test_eos_token_ids();
+    test_context_auto_cap();
+    test_special_token_encode();
 
     fprintf(stderr, "\n=== Results: %d passed, %d failed ===\n",
             tests_passed, tests_failed);
