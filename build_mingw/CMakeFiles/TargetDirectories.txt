@@ -1,5 +1,0 @@
-F:/llm.cpp-1/build_mingw/CMakeFiles/llm.dir
-F:/llm.cpp-1/build_mingw/CMakeFiles/test_gguf.dir
-F:/llm.cpp-1/build_mingw/CMakeFiles/test.dir
-F:/llm.cpp-1/build_mingw/CMakeFiles/edit_cache.dir
-F:/llm.cpp-1/build_mingw/CMakeFiles/rebuild_cache.dir
