@@ -537,11 +537,11 @@ void test_context_override() {
     // Verify key/value pointers are distinct per layer/position
     float* k0 = cache.key(0, 0);
     float* k1 = cache.key(1, 0);
-    ASSERT_TRUE(k1 - k0 == static_cast<ptrdiff_t>(small_ctx) * kv_dim);
+    ASSERT_EQ(k1 - k0, static_cast<ptrdiff_t>(small_ctx) * kv_dim);
 
     float* v0 = cache.value(0, 0);
     float* v1 = cache.value(0, 1);
-    ASSERT_TRUE(v1 - v0 == kv_dim);
+    ASSERT_EQ(v1 - v0, static_cast<ptrdiff_t>(kv_dim));
 
     PASS();
 }
