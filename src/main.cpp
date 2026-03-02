@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "model.h"
 #include "sampler.h"
 
@@ -23,6 +27,7 @@ struct RunConfig {
     bool interactive = false;
     bool show_info = false;
     bool no_chat_template = false;  // disable auto chat template
+    bool no_thinking = false;       // hide <think>...</think> blocks
 };
 
 static void print_usage(const char* prog) {
@@ -52,6 +57,7 @@ static void print_usage(const char* prog) {
         "Other:\n"
         "  -i, --interactive        Interactive chat mode\n"
         "  --no-chat-template       Disable automatic chat template\n"
+        "  --no-thinking            Hide <think>...</think> blocks in output\n"
         "  --info                   Show model info and exit\n"
         "  -h, --help               Show this help\n"
         "\n"
@@ -93,6 +99,8 @@ static bool parse_args(int argc, char** argv, RunConfig& cfg) {
             cfg.interactive = true;
         } else if (arg == "--no-chat-template") {
             cfg.no_chat_template = true;
+        } else if (arg == "--no-thinking") {
+            cfg.no_thinking = true;
         } else if (arg == "--info") {
             cfg.show_info = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -128,7 +136,8 @@ static std::string apply_chat_template(const Model& model, const std::string& pr
 }
 
 static void generate(Model& model, Sampler& sampler, const std::string& prompt,
-                     int max_tokens, bool use_chat_template = false) {
+                     int max_tokens, bool use_chat_template = false,
+                     bool no_thinking = false) {
     // Optionally apply chat template
     std::string final_prompt = prompt;
     bool template_applied = false;
@@ -166,6 +175,10 @@ static void generate(Model& model, Sampler& sampler, const std::string& prompt,
     // Generate tokens
     int pos = prompt_tokens;
     int next_token = -1;
+    bool inside_think = false;          // currently inside <think> block
+    std::string output_buf;             // buffer to detect think tags
+    const std::string think_open = "<think>";
+    const std::string think_close = "</think>";
     for (int i = 0; i < max_tokens; i++) {
         float* logits_ptr;
         if (i == 0) {
@@ -189,13 +202,58 @@ static void generate(Model& model, Sampler& sampler, const std::string& prompt,
             recent_tokens.erase(recent_tokens.begin());
         }
 
-        // Decode and print
+        // Decode and print (with optional thinking filter)
         std::string token_str = model.tokenizer.decode(next_token);
-        printf("%s", token_str.c_str());
-        fflush(stdout);
+        if (no_thinking) {
+            output_buf += token_str;
+            // Process buffer for <think> / </think> tags
+            while (true) {
+                if (inside_think) {
+                    auto close_pos = output_buf.find(think_close);
+                    if (close_pos != std::string::npos) {
+                        output_buf.erase(0, close_pos + think_close.size());
+                        inside_think = false;
+                        continue;
+                    }
+                    // Keep only a tail that could be a partial </think>
+                    if (output_buf.size() >= think_close.size()) {
+                        output_buf.erase(0, output_buf.size() - (think_close.size() - 1));
+                    }
+                    break;
+                } else {
+                    auto open_pos = output_buf.find(think_open);
+                    if (open_pos != std::string::npos) {
+                        // Flush text before the tag
+                        if (open_pos > 0) {
+                            printf("%s", output_buf.substr(0, open_pos).c_str());
+                            fflush(stdout);
+                        }
+                        output_buf.erase(0, open_pos + think_open.size());
+                        inside_think = true;
+                        continue;
+                    }
+                    // Flush safe portion (keep tail that could be partial <think>)
+                    if (output_buf.size() >= think_open.size()) {
+                        size_t safe = output_buf.size() - (think_open.size() - 1);
+                        printf("%s", output_buf.substr(0, safe).c_str());
+                        fflush(stdout);
+                        output_buf.erase(0, safe);
+                    }
+                    break;
+                }
+            }
+        } else {
+            printf("%s", token_str.c_str());
+            fflush(stdout);
+        }
 
         pos++;
         total_tokens++;
+    }
+    // Flush any remaining buffered output
+    if (no_thinking && !inside_think && !output_buf.empty()) {
+        printf("%s", output_buf.c_str());
+        fflush(stdout);
     }
     printf("\n");
 
@@ -219,7 +277,8 @@ static void generate(Model& model, Sampler& sampler, const std::string& prompt,
 }
 
 static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
-                            bool use_chat_template = false) {
+                            bool use_chat_template = false,
+                            bool no_thinking = false) {
     fprintf(stderr, "Interactive mode. Type your prompt and press Enter.\n");
     fprintf(stderr, "Type 'quit' or 'exit' to stop.\n\n");
 
@@ -242,12 +301,18 @@ static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
         // Reset KV cache for new conversation
         model.kv_cache.clear();
 
-        generate(model, sampler, line, max_tokens, use_chat_template);
+        generate(model, sampler, line, max_tokens, use_chat_template, no_thinking);
         printf("\n");
     }
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Enable UTF-8 console I/O on Windows
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     RunConfig cfg;
 
     if (!parse_args(argc, argv, cfg)) {
@@ -296,9 +361,11 @@ int main(int argc, char** argv) {
     }
 
     if (cfg.interactive) {
-        interactive_mode(model, sampler, cfg.max_tokens, use_chat_template);
+        interactive_mode(model, sampler, cfg.max_tokens, use_chat_template,
+                        cfg.no_thinking);
     } else {
-        generate(model, sampler, cfg.prompt, cfg.max_tokens, use_chat_template);
+        generate(model, sampler, cfg.prompt, cfg.max_tokens, use_chat_template,
+                cfg.no_thinking);
     }
 
     return 0;
