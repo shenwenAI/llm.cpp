@@ -49,7 +49,17 @@ endif()
 if(LLM_CUDA)
     target_link_libraries(llm PRIVATE CUDA::cudart CUDA::cublas)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "70;75;80;86;89;90")
+        # Auto-detect local GPU when CMake supports it; otherwise pick
+        # architectures that the installed CUDA toolkit actually supports.
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "native")
+        elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "13.0")
+            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "75;80;86;89;90")
+        elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.0")
+            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "70;75;80;86;89;90")
+        else()
+            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "70;75;80")
+        endif()
     endif()
 endif()
 

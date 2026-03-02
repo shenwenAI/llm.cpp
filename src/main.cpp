@@ -357,8 +357,12 @@ int main(int argc, char** argv) {
     Backend backend = Backend::CPU;
     if (cfg.use_gpu) {
 #ifdef LLM_USE_CUDA
-        backend = Backend::CUDA;
-        fprintf(stderr, "Using CUDA GPU backend\n");
+        if (cuda_check_gpu()) {
+            backend = Backend::CUDA;
+            fprintf(stderr, "Using CUDA GPU backend\n");
+        } else {
+            fprintf(stderr, "Warning: No usable GPU found. Falling back to CPU.\n");
+        }
 #else
         fprintf(stderr, "Warning: GPU support not compiled. "
                 "Rebuild with -DLLM_CUDA=ON. Falling back to CPU.\n");

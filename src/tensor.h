@@ -18,6 +18,7 @@
 
 #ifdef LLM_USE_CUDA
 // Forward declarations for CUDA kernels (defined in cuda_kernels.cu)
+bool cuda_check_gpu();
 void cuda_matmul(float* out, const float* a, const float* b, int M, int N, int K);
 void cuda_matmul_transposed_weight(float* out, const float* x, const float* w, int N, int K);
 void cuda_rmsnorm(float* out, const float* x, const float* w, int n, float eps);

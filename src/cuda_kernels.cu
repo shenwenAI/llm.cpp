@@ -16,6 +16,30 @@
     } \
 } while(0)
 
+// ---- GPU availability check ----
+
+bool cuda_check_gpu() {
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count == 0) {
+        fprintf(stderr, "No CUDA-capable GPU detected.\n");
+        return false;
+    }
+
+    int device_id = 0;
+    cudaDeviceProp prop;
+    if (cudaGetDevice(&device_id) != cudaSuccess ||
+        cudaGetDeviceProperties(&prop, device_id) != cudaSuccess) {
+        fprintf(stderr, "Failed to query CUDA device properties.\n");
+        return false;
+    }
+    fprintf(stderr, "GPU: %s (compute %d.%d, %.0f MB, %d SMs)\n",
+            prop.name, prop.major, prop.minor,
+            prop.totalGlobalMem / (1024.0 * 1024.0),
+            prop.multiProcessorCount);
+    return true;
+}
+
 static cublasHandle_t cublas_handle = nullptr;
 
 static void ensure_cublas() {
