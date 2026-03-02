@@ -235,6 +235,49 @@ void test_cpu_matmul_transposed() {
     PASS();
 }
 
+void test_cpu_matmul_transposed_q8_0() {
+    TEST(cpu_matmul_transposed_q8_0);
+
+    // Build a 2×32 weight matrix in Q8_0 format (N=2, K=32).
+    // Q8_0 block layout: 2 bytes f16 scale, then 32 int8 values = 34 bytes/block.
+    //
+    // Row 0: scale=1.0 (f16=0x3C00), values=[1,2,...,32]
+    // Row 1: scale=2.0 (f16=0x4000), values=[1,2,...,32]
+    const int N = 2, K = 32;
+    const int bytes_per_block = 34; // 2-byte f16 scale + 32 int8 values
+    std::vector<uint8_t> w_q8(static_cast<size_t>(N) * bytes_per_block);
+
+    uint16_t scale1 = 0x3C00; // 1.0 in f16
+    memcpy(w_q8.data(), &scale1, 2);
+    for (int j = 0; j < 32; j++) w_q8[2 + j] = static_cast<uint8_t>(j + 1);
+
+    uint16_t scale2 = 0x4000; // 2.0 in f16
+    memcpy(w_q8.data() + bytes_per_block, &scale2, 2);
+    for (int j = 0; j < 32; j++) w_q8[bytes_per_block + 2 + j] = static_cast<uint8_t>(j + 1);
+
+    // x = [1, 1, ..., 1]  (K=32 ones)
+    std::vector<float> x(K, 1.0f);
+    std::vector<float> out(N, 0.0f);
+
+    cpu_matmul_transposed_q8_0(out.data(), x.data(), w_q8.data(), N, K);
+
+    // Expected: sum(j=1..32) * scale
+    // out[0] = 1.0 * (1+2+...+32) = 528
+    // out[1] = 2.0 * (1+2+...+32) = 1056
+    ASSERT_NEAR(out[0], 528.0f, 0.5f);
+    ASSERT_NEAR(out[1], 1056.0f, 0.5f);
+
+    // Cross-check: dequantize then matmul must give the same result
+    std::vector<float> w_f32(static_cast<size_t>(N) * K);
+    dequantize(w_q8.data(), w_f32.data(), static_cast<int64_t>(N) * K, GGML_TYPE_Q8_0);
+    std::vector<float> out_ref(N, 0.0f);
+    cpu_matmul_transposed(out_ref.data(), x.data(), w_f32.data(), N, K);
+    ASSERT_NEAR(out[0], out_ref[0], 1e-4f);
+    ASSERT_NEAR(out[1], out_ref[1], 1e-4f);
+
+    PASS();
+}
+
 void test_cpu_silu() {
     TEST(cpu_silu);
 
@@ -944,6 +987,7 @@ int main() {
     test_cpu_softmax();
     test_cpu_matmul();
     test_cpu_matmul_transposed();
+    test_cpu_matmul_transposed_q8_0();
     test_cpu_silu();
     test_cpu_add();
     test_cpu_rope();
