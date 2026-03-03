@@ -19,7 +19,7 @@ You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
 
 ### Requirements
 
-- C++17 compiler (GCC 7+ or Clang 5+)
+- C++17 compiler (GCC 7+, Clang 5+, or MSVC 2017+)
 - CMake 3.16+
 - (Optional) OpenMP for CPU parallelization
 - (Optional) CUDA toolkit for GPU support
@@ -39,6 +39,20 @@ mkdir build && cd build
 cmake .. -DLLM_CUDA=ON
 cmake --build .
 ```
+
+### Windows (MSVC)
+
+Open **Developer Command Prompt for Visual Studio** (or **x64 Native Tools Command Prompt**) and run:
+
+```bat
+mkdir build && cd build
+cmake .. -DLLM_OPENMP=OFF
+cmake --build . --config Release
+```
+
+Or open the folder in Visual Studio (CMake is supported natively) and build from the IDE.
+
+> **Note:** On Windows the HTTP server links against `ws2_32` automatically. OpenMP can be enabled if your MSVC installation includes it (remove `-DLLM_OPENMP=OFF`).
 
 ### Options
 
