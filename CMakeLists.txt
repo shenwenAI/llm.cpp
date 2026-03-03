@@ -15,6 +15,8 @@ set(LLM_SOURCES src/main.cpp)
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options(-O2 -Wall -Wextra -Wpedantic)
+elseif(MSVC)
+    add_compile_options(/W3 /O2)
 endif()
 
 # OpenMP
@@ -66,6 +68,11 @@ endif()
 # Math library on Linux
 if(UNIX AND NOT APPLE)
     target_link_libraries(llm PRIVATE m)
+endif()
+
+# Winsock library on Windows (for HTTP server)
+if(WIN32)
+    target_link_libraries(llm PRIVATE ws2_32)
 endif()
 
 # Tests
