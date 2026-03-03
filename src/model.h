@@ -115,6 +115,7 @@ public:
     std::vector<float> hb;      // [intermediate_size]
     std::vector<float> hb2;     // [intermediate_size]
     std::vector<float> logits;  // [vocab_size]
+    std::vector<float> rope_freqs; // [head_dim/2] precomputed RoPE frequencies
 
     explicit Model(Backend backend) : compute(backend) {}
 
@@ -237,7 +238,7 @@ public:
             // Apply RoPE (separate Q and K dims for GQA correctness)
             compute.rope(q.data(), k.data(), num_heads * head_dim,
                          num_kv_heads * head_dim, head_dim,
-                         pos, config.rope_theta, config.rope_neox);
+                         pos, config.rope_theta, rope_freqs.data(), config.rope_neox);
 
             // Store K, V in cache
             memcpy(kv_cache.key(l, pos), k.data(), kv_dim * sizeof(float));
@@ -591,6 +592,16 @@ private:
         hb.resize(config.intermediate_size);
         hb2.resize(config.intermediate_size);
         logits.resize(config.vocab_size);
+
+        // Precompute RoPE frequency table: freqs[i] = 1 / theta^(2i / head_dim)
+        // Depends only on head_dim and rope_theta (both fixed at load time), so
+        // computing once here avoids a heap allocation on every forward() call.
+        int half_dim = config.head_dim / 2;
+        rope_freqs.resize(half_dim);
+        for (int i = 0; i < half_dim; i++) {
+            rope_freqs[i] = 1.0f / powf(config.rope_theta,
+                                        static_cast<float>(2 * i) / config.head_dim);
+        }
     }
 };
 

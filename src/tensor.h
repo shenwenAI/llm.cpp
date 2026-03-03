@@ -305,17 +305,12 @@ inline void cpu_silu_elementwise_mul(float* out, const float* gate, const float*
 
 // Rotary positional embeddings (RoPE) - interleaved style (LLaMA)
 // Pairs consecutive elements: (0,1), (2,3), ...
-// q_dim and k_dim may differ when using GQA (grouped query attention)
-inline void cpu_rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
+// q_dim and k_dim may differ when using GQA (grouped query attention).
+// freqs[j] = 1 / theta^(2j / head_dim), length = head_dim/2
+inline void cpu_rope_apply(float* q, float* k, int q_dim, int k_dim, int head_dim,
+                           int pos, const float* freqs) {
     int q_heads = q_dim / head_dim;
     int k_heads = k_dim / head_dim;
-    int half_dim = head_dim / 2;
-
-    // Precompute per-dimension frequencies (shared across all heads)
-    std::vector<float> freqs(half_dim);
-    for (int j = 0; j < half_dim; j++) {
-        freqs[j] = 1.0f / powf(theta, static_cast<float>(2 * j) / head_dim);
-    }
 
     // Apply to query
     #ifdef LLM_USE_OPENMP
@@ -352,16 +347,22 @@ inline void cpu_rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int
     }
 }
 
-// Rotary positional embeddings (RoPE) - neox/halved style (Qwen, GPT-NeoX)
-// Pairs elements at distance head_dim/2: (0, head_dim/2), (1, head_dim/2+1), ...
-inline void cpu_rope_neox(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
+// Wrapper that computes the frequency table on the fly (for standalone use / tests).
+inline void cpu_rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
     int half_dim = head_dim / 2;
-
-    // Precompute per-dimension frequencies (shared across all heads)
     std::vector<float> freqs(half_dim);
     for (int i = 0; i < half_dim; i++) {
         freqs[i] = 1.0f / powf(theta, static_cast<float>(2 * i) / head_dim);
     }
+    cpu_rope_apply(q, k, q_dim, k_dim, head_dim, pos, freqs.data());
+}
+
+// Rotary positional embeddings (RoPE) - neox/halved style (Qwen, GPT-NeoX)
+// Pairs elements at distance head_dim/2: (0, head_dim/2), (1, head_dim/2+1), ...
+// freqs[i] = 1 / theta^(2i / head_dim), length = head_dim/2
+inline void cpu_rope_neox_apply(float* q, float* k, int q_dim, int k_dim, int head_dim,
+                                int pos, const float* freqs) {
+    int half_dim = head_dim / 2;
 
     // Apply to query
     int q_heads = q_dim / head_dim;
@@ -398,6 +399,16 @@ inline void cpu_rope_neox(float* q, float* k, int q_dim, int k_dim, int head_dim
             kh[i + half_dim] = k1 * cos_val + k0 * sin_val;
         }
     }
+}
+
+// Wrapper that computes the frequency table on the fly (for standalone use / tests).
+inline void cpu_rope_neox(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta) {
+    int half_dim = head_dim / 2;
+    std::vector<float> freqs(half_dim);
+    for (int i = 0; i < half_dim; i++) {
+        freqs[i] = 1.0f / powf(theta, static_cast<float>(2 * i) / head_dim);
+    }
+    cpu_rope_neox_apply(q, k, q_dim, k_dim, head_dim, pos, freqs.data());
 }
 
 // Element-wise add: out = a + b
@@ -508,17 +519,29 @@ struct Compute {
         cpu_silu_elementwise_mul(out, gate, up, n);
     }
 
-    void rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos, float theta, bool neox = false) {
+    // When precomputed_freqs is non-null (CPU path), it is used directly to
+    // avoid recomputing the frequency table on every token.  theta is still
+    // required for the CUDA path which computes freqs on the device.
+    void rope(float* q, float* k, int q_dim, int k_dim, int head_dim, int pos,
+              float theta, const float* precomputed_freqs = nullptr, bool neox = false) {
 #ifdef LLM_USE_CUDA
         if (backend == Backend::CUDA) {
             cuda_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
             return;
         }
 #endif
-        if (neox) {
-            cpu_rope_neox(q, k, q_dim, k_dim, head_dim, pos, theta);
+        if (precomputed_freqs) {
+            if (neox) {
+                cpu_rope_neox_apply(q, k, q_dim, k_dim, head_dim, pos, precomputed_freqs);
+            } else {
+                cpu_rope_apply(q, k, q_dim, k_dim, head_dim, pos, precomputed_freqs);
+            }
         } else {
-            cpu_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
+            if (neox) {
+                cpu_rope_neox(q, k, q_dim, k_dim, head_dim, pos, theta);
+            } else {
+                cpu_rope(q, k, q_dim, k_dim, head_dim, pos, theta);
+            }
         }
     }
 
