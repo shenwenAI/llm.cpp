@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -20,7 +23,7 @@ jobs:
       run: cmake -B build -DLLM_OPENMP=OFF
 
     - name: Build
-      run: cmake --build build
+      run: cmake --build build --config Release
 
     - name: Test
-      run: cd build && ctest --output-on-failure
+      run: cd build && ctest --output-on-failure --build-config Release
