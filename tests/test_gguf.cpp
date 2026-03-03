@@ -7,11 +7,134 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
+#endif
+
 #include "gguf.h"
 #include "tensor.h"
 #include "sampler.h"
 #include "tokenizer.h"
 #include "model.h"
+
+// ---- System configuration display ----
+
+// Return CPU brand string (best-effort, cross-platform).
+static std::string get_cpu_name() {
+#if defined(_WIN32)
+    char buf[256] = {};
+    DWORD size = sizeof(buf);
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &key) == ERROR_SUCCESS) {
+        RegQueryValueExA(key, "ProcessorNameString", nullptr, nullptr,
+                         reinterpret_cast<LPBYTE>(buf), &size);
+        RegCloseKey(key);
+    }
+    if (buf[0]) return buf;
+#elif defined(__APPLE__)
+    char buf[256] = {};
+    size_t size = sizeof(buf);
+    if (sysctlbyname("machdep.cpu.brand_string", buf, &size, nullptr, 0) == 0 && buf[0])
+        return buf;
+#else
+    // Linux - parse /proc/cpuinfo
+    FILE* f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "model name", 10) == 0) {
+                const char* colon = strchr(line, ':');
+                if (colon) {
+                    const char* start = colon + 1;
+                    while (*start == ' ' || *start == '\t') ++start;
+                    std::string name(start);
+                    while (!name.empty() && (name.back() == '\n' || name.back() == '\r'))
+                        name.pop_back();
+                    fclose(f);
+                    return name;
+                }
+            }
+        }
+        fclose(f);
+    }
+#endif
+    return "Unknown CPU";
+}
+
+// Detect GPU name via nvidia-smi (no CUDA runtime needed).
+static std::string get_gpu_name() {
+#ifdef _WIN32
+    FILE* pipe = _popen("nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>nul", "r");
+#else
+    FILE* pipe = popen("nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null", "r");
+#endif
+    if (pipe) {
+        char buf[256] = {};
+        char* ret = fgets(buf, sizeof(buf), pipe);
+#ifdef _WIN32
+        _pclose(pipe);
+#else
+        pclose(pipe);
+#endif
+        if (ret && buf[0]) {
+            std::string name(buf);
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r'))
+                name.pop_back();
+            if (!name.empty()) return name;
+        }
+    }
+    return "";
+}
+
+// Detect CUDA driver version via nvidia-smi.
+static std::string get_cuda_driver_version() {
+#ifdef _WIN32
+    FILE* pipe = _popen("nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>nul", "r");
+#else
+    FILE* pipe = popen("nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null", "r");
+#endif
+    if (pipe) {
+        char buf[128] = {};
+        char* ret = fgets(buf, sizeof(buf), pipe);
+#ifdef _WIN32
+        _pclose(pipe);
+#else
+        pclose(pipe);
+#endif
+        if (ret && buf[0]) {
+            std::string ver(buf);
+            while (!ver.empty() && (ver.back() == '\n' || ver.back() == '\r'))
+                ver.pop_back();
+            if (!ver.empty()) return ver;
+        }
+    }
+    return "";
+}
+
+// Print system configuration (CPU, GPU, CUDA) to stderr.
+static void print_system_config() {
+    fprintf(stderr, "=== System Configuration ===\n");
+    fprintf(stderr, "CPU:  %s\n", get_cpu_name().c_str());
+
+    std::string gpu = get_gpu_name();
+    if (!gpu.empty()) {
+        fprintf(stderr, "GPU:  %s\n", gpu.c_str());
+        std::string cuda_ver = get_cuda_driver_version();
+        if (!cuda_ver.empty()) {
+            fprintf(stderr, "CUDA Driver: %s\n", cuda_ver.c_str());
+        }
+    } else {
+        fprintf(stderr, "GPU:  (not detected)\n");
+    }
+    fprintf(stderr, "============================\n\n");
+}
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -1208,6 +1331,7 @@ void test_cpu_matmul_transposed_f8_e5m2() {
 // ---- Run all tests ----
 
 int main() {
+    print_system_config();
     fprintf(stderr, "Running llm.cpp tests...\n\n");
 
     fprintf(stderr, "GGUF format tests:\n");

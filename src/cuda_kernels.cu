@@ -39,6 +39,8 @@ bool cuda_print_gpu_info() {
             prop.name, prop.major, prop.minor,
             prop.totalGlobalMem / (1024.0 * 1024.0),
             prop.multiProcessorCount);
+    fprintf(stderr, "CUDA: %d.%d\n",
+            CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
     return true;
 }
 
