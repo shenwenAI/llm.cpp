@@ -93,8 +93,8 @@ static std::string get_gpu_name() {
     return "";
 }
 
-// Detect CUDA version via nvidia-smi driver query.
-static std::string get_cuda_version() {
+// Detect CUDA driver version via nvidia-smi.
+static std::string get_cuda_driver_version() {
 #ifdef _WIN32
     FILE* pipe = _popen("nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>nul", "r");
 #else
@@ -126,7 +126,7 @@ static void print_system_config() {
     std::string gpu = get_gpu_name();
     if (!gpu.empty()) {
         fprintf(stderr, "GPU:  %s\n", gpu.c_str());
-        std::string cuda_ver = get_cuda_version();
+        std::string cuda_ver = get_cuda_driver_version();
         if (!cuda_ver.empty()) {
             fprintf(stderr, "CUDA Driver: %s\n", cuda_ver.c_str());
         }
