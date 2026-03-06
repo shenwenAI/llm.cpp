@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "gguf.h"
-#include "hf_loader.h"
 #include "tensor.h"
+#include "hf_loader.h"
 #include "tokenizer.h"
 
 // ---- Model configuration ----
@@ -432,6 +432,20 @@ private:
         // Mark hybrid architecture for Qwen3.5
         if (arch == "qwen35" || arch == "qwen35moe") {
             config.is_hybrid = true;
+
+            // Read layer types from GGUF metadata.
+            // In llama.cpp GGUF files, layer types are stored as an integer
+            // array: 0 = full_attention, 1 = linear_attention
+            std::string layer_types_key = arch + ".attention.layer_types";
+            std::vector<int64_t> lt = gguf.get_i64_array(layer_types_key);
+            if (!lt.empty()) {
+                config.layer_types.clear();
+                config.layer_types.reserve(lt.size());
+                for (int64_t v : lt) {
+                    config.layer_types.push_back(
+                        v == 0 ? "full_attention" : "linear_attention");
+                }
+            }
         }
 
         // Get vocab size from tokenizer if not in model metadata

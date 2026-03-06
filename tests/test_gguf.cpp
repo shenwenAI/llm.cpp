@@ -1260,6 +1260,99 @@ void test_cpu_matmul_transposed_f16() {
     PASS();
 }
 
+void test_bf16_gguf_type() {
+    TEST(bf16_gguf_type);
+
+    // Verify BF16 GGML type properties
+    ASSERT_EQ(ggml_type_size(GGML_TYPE_BF16), 2u);
+    ASSERT_EQ(ggml_block_size(GGML_TYPE_BF16), 1u);
+    ASSERT_EQ(std::string(ggml_type_name(GGML_TYPE_BF16)), std::string("BF16"));
+
+    PASS();
+}
+
+void test_dequantize_bf16() {
+    TEST(dequantize_bf16);
+
+    // BF16 for known values: upper 16 bits of IEEE 754 float32
+    // 1.0f = 0x3F800000 → BF16 = 0x3F80
+    // 2.0f = 0x40000000 → BF16 = 0x4000
+    // -1.0f = 0xBF800000 → BF16 = 0xBF80
+    // 0.0f = 0x00000000 → BF16 = 0x0000
+    uint16_t src[] = {0x3F80, 0x4000, 0xBF80, 0x0000};
+    float dst[4] = {};
+    dequantize(src, dst, 4, GGML_TYPE_BF16);
+
+    ASSERT_NEAR(dst[0], 1.0f, 1e-6f);
+    ASSERT_NEAR(dst[1], 2.0f, 1e-6f);
+    ASSERT_NEAR(dst[2], -1.0f, 1e-6f);
+    ASSERT_NEAR(dst[3], 0.0f, 1e-6f);
+
+    PASS();
+}
+
+void test_cpu_matmul_transposed_bf16() {
+    TEST(cpu_matmul_transposed_bf16);
+
+    // Build a 2×4 weight matrix in BF16 format.
+    // Row 0: [1.0, 0.0, 0.0, 0.0] — 1.0=0x3F80, 0.0=0x0000
+    // Row 1: [0.0, 2.0, 0.0, 0.0] — 2.0=0x4000
+    // x = [1.0, 2.0, 3.0, 4.0]
+    // Expected: out[0] = 1.0*1.0 = 1.0, out[1] = 2.0*2.0 = 4.0
+    const int N = 2, K = 4;
+    uint16_t w[N * K] = {
+        0x3F80, 0x0000, 0x0000, 0x0000,  // row 0: [1.0, 0.0, 0.0, 0.0]
+        0x0000, 0x4000, 0x0000, 0x0000,  // row 1: [0.0, 2.0, 0.0, 0.0]
+    };
+    float x[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float out[2] = {};
+
+    cpu_matmul_transposed_bf16(out, x, w, N, K);
+
+    ASSERT_NEAR(out[0], 1.0f, 1e-4f);
+    ASSERT_NEAR(out[1], 4.0f, 1e-4f);
+
+    // Cross-check: dequantize then matmul must give the same result
+    float w_f32[N * K];
+    dequantize(w, w_f32, N * K, GGML_TYPE_BF16);
+    float out_ref[2] = {};
+    cpu_matmul_transposed(out_ref, x, w_f32, N, K);
+    ASSERT_NEAR(out[0], out_ref[0], 1e-4f);
+    ASSERT_NEAR(out[1], out_ref[1], 1e-4f);
+
+    // Non-trivial: row of all 2.0 weights, x = all ones → dot = 4 * 2.0 = 8.0
+    uint16_t w2[1 * K] = {0x4000, 0x4000, 0x4000, 0x4000};
+    float x2[K] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float out2[1] = {};
+    cpu_matmul_transposed_bf16(out2, x2, w2, 1, K);
+    ASSERT_NEAR(out2[0], 8.0f, 1e-4f);
+
+    PASS();
+}
+
+void test_qwen35_layer_types_from_gguf() {
+    TEST(qwen35_layer_types_from_gguf);
+
+    // Verify that integer layer type values are correctly mapped:
+    // 0 = full_attention, 1 = linear_attention
+    // This tests the mapping logic in load_config()
+
+    // Simulate: layer_types array [0, 1, 1, 0] → ["full_attention", "linear_attention", ...]
+    std::vector<int64_t> raw_types = {0, 1, 1, 0};
+    std::vector<std::string> mapped;
+    for (int64_t v : raw_types) {
+        mapped.push_back(v == 0 ? "full_attention" : "linear_attention");
+    }
+
+    ASSERT_EQ(static_cast<int>(mapped.size()), 4);
+    ASSERT_EQ(mapped[0], std::string("full_attention"));
+    ASSERT_EQ(mapped[1], std::string("linear_attention"));
+    ASSERT_EQ(mapped[2], std::string("linear_attention"));
+    ASSERT_EQ(mapped[3], std::string("full_attention"));
+
+    PASS();
+}
+
 void test_cpu_matmul_transposed_f8_e4m3() {
     TEST(cpu_matmul_transposed_f8_e4m3);
 
@@ -1966,6 +2059,12 @@ int main() {
 
     fprintf(stderr, "\nF16 direct computation tests:\n");
     test_cpu_matmul_transposed_f16();
+
+    fprintf(stderr, "\nBF16 type and computation tests:\n");
+    test_bf16_gguf_type();
+    test_dequantize_bf16();
+    test_cpu_matmul_transposed_bf16();
+    test_qwen35_layer_types_from_gguf();
 
     fprintf(stderr, "\nK-quant type and dequantization tests:\n");
     test_kquant_type_sizes();

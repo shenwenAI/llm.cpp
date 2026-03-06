@@ -116,13 +116,16 @@ struct SafeTensorInfo {
 };
 
 // ---- BFloat16 and Float16 conversion ----
-
+// bf16_to_fp32() is defined in tensor.h (canonical location for type conversions).
+// When safetensors.h is used standalone (e.g. in tests), provide a fallback.
+#ifndef LLM_TENSOR_H
 inline float bf16_to_fp32(uint16_t bf) {
     uint32_t f32_bits = static_cast<uint32_t>(bf) << 16;
     float result;
     memcpy(&result, &f32_bits, sizeof(float));
     return result;
 }
+#endif
 
 inline float st_fp16_to_fp32(uint16_t h) {
     uint32_t sign = (static_cast<uint32_t>(h) & 0x8000u) << 16;

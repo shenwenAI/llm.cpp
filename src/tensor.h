@@ -57,6 +57,16 @@ inline float fp16_to_fp32(uint16_t h) {
     return f;
 }
 
+// ---- BFloat16 conversion ----
+// BF16 is the upper 16 bits of IEEE 754 float32.
+// 1 sign + 8 exponent + 7 mantissa bits.
+inline float bf16_to_fp32(uint16_t bf) {
+    uint32_t f32_bits = static_cast<uint32_t>(bf) << 16;
+    float result;
+    memcpy(&result, &f32_bits, sizeof(float));
+    return result;
+}
+
 // ---- FP8 conversion ----
 
 // Convert FP8 E4M3FN (1 sign + 4 exponent + 3 mantissa, bias=7, no Inf) to FP32.
@@ -164,6 +174,14 @@ inline void dequantize_f16(const void* src, float* dst, int64_t n) {
     const uint16_t* data = static_cast<const uint16_t*>(src);
     for (int64_t i = 0; i < n; i++) {
         dst[i] = fp16_to_fp32(data[i]);
+    }
+}
+
+// Convert BFloat16 array to F32
+inline void dequantize_bf16(const void* src, float* dst, int64_t n) {
+    const uint16_t* data = static_cast<const uint16_t*>(src);
+    for (int64_t i = 0; i < n; i++) {
+        dst[i] = bf16_to_fp32(data[i]);
     }
 }
 
@@ -415,6 +433,9 @@ inline void dequantize(const void* src, float* dst, int64_t n, GGMLType type) {
         case GGML_TYPE_F16:
             dequantize_f16(src, dst, n);
             break;
+        case GGML_TYPE_BF16:
+            dequantize_bf16(src, dst, n);
+            break;
         case GGML_TYPE_Q4_0:
             dequantize_q4_0(src, dst, n);
             break;
@@ -608,6 +629,27 @@ inline void cpu_matmul_transposed_f16(float* out, const float* x,
         const uint16_t* row = wptr + static_cast<size_t>(i) * K;
         for (int k = 0; k < K; k++) {
             sum += x[k] * fp16_to_fp32(row[k]);
+        }
+        out[i] = sum;
+    }
+}
+
+// Fused BF16 dequantize + transposed matmul: out[N] = x[K] · W[N×K]
+// W is stored as 2 bytes per element in BFloat16 format (no block structure).
+// Direct computation: each BF16 value is converted to F32 inline during the dot
+// product, keeping weight traffic at 2 bytes/element instead of 4 bytes/element
+// and avoiding materialization of a full F32 weight buffer.
+inline void cpu_matmul_transposed_bf16(float* out, const float* x,
+                                       const void* w, int N, int K) {
+    const uint16_t* wptr = static_cast<const uint16_t*>(w);
+    #ifdef LLM_USE_OPENMP
+    #pragma omp parallel for
+    #endif
+    for (int i = 0; i < N; i++) {
+        float sum = 0.0f;
+        const uint16_t* row = wptr + static_cast<size_t>(i) * K;
+        for (int k = 0; k < K; k++) {
+            sum += x[k] * bf16_to_fp32(row[k]);
         }
         out[i] = sum;
     }
@@ -862,6 +904,9 @@ struct Compute {
                 break;
             case GGML_TYPE_F16:
                 cpu_matmul_transposed_f16(out, x, w.data, N, K);
+                break;
+            case GGML_TYPE_BF16:
+                cpu_matmul_transposed_bf16(out, x, w.data, N, K);
                 break;
             case GGML_TYPE_Q8_0:
                 cpu_matmul_transposed_q8_0(out, x, w.data, N, K);
