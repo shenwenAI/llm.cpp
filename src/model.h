@@ -423,9 +423,11 @@ private:
 
         config.kv_dim = config.head_dim * config.num_kv_heads;
 
-        // Use neox-style (halved) RoPE for Qwen models
+        // Use neox-style (halved) RoPE for Qwen and certain other models
         if (arch == "qwen2" || arch == "qwen3" || arch == "qwen2moe" ||
-            arch == "qwen35" || arch == "qwen35moe") {
+            arch == "qwen35" || arch == "qwen35moe" ||
+            arch == "starcoder2" || arch == "phi3" || arch == "phi2" ||
+            arch == "gpt_neox" || arch == "stablelm" || arch == "codeshell") {
             config.rope_neox = true;
         }
 
@@ -606,7 +608,12 @@ private:
             weights.layers[l].attn_k_norm = load_tensor(prefix + "attn_k_norm.weight",
                 static_cast<int64_t>(head_dim), true);
 
-            weights.layers[l].ffn_norm = load_tensor(prefix + "ffn_norm.weight", dim);
+            weights.layers[l].ffn_norm = load_tensor(prefix + "ffn_norm.weight", dim, true);
+            // Qwen3.5 GGUF files use "post_attention_norm" instead of "ffn_norm"
+            if (!weights.layers[l].ffn_norm) {
+                weights.layers[l].ffn_norm = load_tensor(
+                    prefix + "post_attention_norm.weight", dim);
+            }
             weights.layers[l].w_gate = load_tensor_raw(prefix + "ffn_gate.weight",
                 static_cast<int64_t>(ffn) * dim);
             weights.layers[l].w_up = load_tensor_raw(prefix + "ffn_up.weight",

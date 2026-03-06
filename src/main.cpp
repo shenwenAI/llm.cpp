@@ -1,6 +1,6 @@
 // llm.cpp - A lightweight C++ LLM inference engine
 // Supports loading GGUF models and running text generation on CPU or GPU.
-// It only can use F32, F16,Q4_0,Q8_0
+// Quantization support: F32, F16, BF16, Q4_0, Q8_0, Q4_K, Q6_K (fused), Q2_K-Q5_K (fallback), FP8
 
 #include <chrono>
 #include <cstdio>
@@ -138,8 +138,13 @@ static void print_usage(const char* prog) {
         "  -h, --help               Show this help\n"
         "\n"
         "Supported model formats:\n"
-        "  - GGUF files (.gguf) - standard quantized format\n"
+        "  - GGUF files (.gguf) - quantized format (F32/F16/BF16/Q4_0/Q8_0/Q4_K/Q6_K/FP8)\n"
         "  - HuggingFace directories (config.json + *.safetensors) - direct F32/F16/BF16 inference\n"
+        "\n"
+        "Supported architectures:\n"
+        "  LLaMA, Mistral, Qwen (2/3/3.5), DeepSeek, Gemma (1/2/3), Phi (2/3),\n"
+        "  InternLM2, ChatGLM/GLM4, Cohere/Command-R, StarCoder2, MiniCPM, SmolLM3,\n"
+        "  Exaone, Nemotron, Falcon-H1, OLMO, GPT-NeoX and compatible models\n"
         "\n"
         "Examples:\n"
         "  %s -m model.gguf -p \"Once upon a time\"\n"
