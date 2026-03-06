@@ -732,7 +732,9 @@ void test_qwen3_config() {
     // Simulate what load_config does for RoPE style
     bool rope_neox = (cfg.architecture == "qwen2" ||
                       cfg.architecture == "qwen3" ||
-                      cfg.architecture == "qwen2moe");
+                      cfg.architecture == "qwen2moe" ||
+                      cfg.architecture == "qwen35" ||
+                      cfg.architecture == "qwen35moe");
     ASSERT_TRUE(rope_neox);
 
     // Verify Qwen3-0.6B dimensions
@@ -1455,6 +1457,300 @@ void test_dequantize_q2_k() {
     PASS();
 }
 
+// ---- SafeTensors and HF loader tests ----
+
+#include "safetensors.h"
+#include "hf_loader.h"
+
+void test_safetensors_dtype() {
+    TEST(safetensors_dtype);
+
+    // Test dtype string parsing
+    ASSERT_EQ(st_dtype_from_string("F32"), ST_DTYPE_F32);
+    ASSERT_EQ(st_dtype_from_string("F16"), ST_DTYPE_F16);
+    ASSERT_EQ(st_dtype_from_string("BF16"), ST_DTYPE_BF16);
+    ASSERT_EQ(st_dtype_from_string("I8"), ST_DTYPE_I8);
+    ASSERT_EQ(st_dtype_from_string("UNKNOWN"), ST_DTYPE_UNKNOWN);
+
+    // Test dtype sizes
+    ASSERT_EQ(st_dtype_size(ST_DTYPE_F32), 4u);
+    ASSERT_EQ(st_dtype_size(ST_DTYPE_F16), 2u);
+    ASSERT_EQ(st_dtype_size(ST_DTYPE_BF16), 2u);
+    ASSERT_EQ(st_dtype_size(ST_DTYPE_I8), 1u);
+
+    // Test GGML type mapping
+    ASSERT_EQ(st_dtype_to_ggml(ST_DTYPE_F32), GGML_TYPE_F32);
+    ASSERT_EQ(st_dtype_to_ggml(ST_DTYPE_F16), GGML_TYPE_F16);
+
+    PASS();
+}
+
+void test_safetensors_parse() {
+    TEST(safetensors_parse);
+
+    // Create a minimal SafeTensors file in memory
+    // Header: {"test_tensor": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}
+    std::string header =
+        "{\"test_tensor\": {\"dtype\": \"F32\", \"shape\": [2, 3], "
+        "\"data_offsets\": [0, 24]}}";
+
+    uint64_t header_len = header.size();
+    size_t total_size = 8 + header_len + 24;  // 6 floats = 24 bytes
+    std::vector<uint8_t> buf(total_size, 0);
+
+    // Write header length
+    memcpy(buf.data(), &header_len, 8);
+    // Write header
+    memcpy(buf.data() + 8, header.c_str(), header_len);
+    // Write tensor data: 6 floats
+    float data[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    memcpy(buf.data() + 8 + header_len, data, 24);
+
+    // Write to temp file
+    const char* tmp_path = "/tmp/test_safetensors.safetensors";
+    FILE* f = fopen(tmp_path, "wb");
+    ASSERT_TRUE(f != nullptr);
+    fwrite(buf.data(), 1, buf.size(), f);
+    fclose(f);
+
+    // Parse it
+    SafeTensorsFile st;
+    ASSERT_TRUE(st.load(tmp_path));
+    ASSERT_EQ(static_cast<int>(st.tensors.size()), 1);
+
+    auto it = st.tensors.find("test_tensor");
+    ASSERT_TRUE(it != st.tensors.end());
+
+    const SafeTensorInfo& info = it->second;
+    ASSERT_EQ(info.dtype, ST_DTYPE_F32);
+    ASSERT_EQ(static_cast<int>(info.shape.size()), 2);
+    ASSERT_EQ(info.shape[0], 2);
+    ASSERT_EQ(info.shape[1], 3);
+    ASSERT_EQ(info.num_elements(), 6);
+
+    // Verify data
+    const void* raw = st.get_tensor_data("test_tensor");
+    ASSERT_TRUE(raw != nullptr);
+    const float* fdata = static_cast<const float*>(raw);
+    ASSERT_NEAR(fdata[0], 1.0f, 1e-6f);
+    ASSERT_NEAR(fdata[5], 6.0f, 1e-6f);
+
+    // Test dequantization (F32 -> F32 is identity)
+    float out[6];
+    st.dequantize_to_f32(raw, out, 6, ST_DTYPE_F32);
+    ASSERT_NEAR(out[0], 1.0f, 1e-6f);
+    ASSERT_NEAR(out[5], 6.0f, 1e-6f);
+
+    // Clean up
+    remove(tmp_path);
+
+    PASS();
+}
+
+void test_bf16_conversion() {
+    TEST(bf16_conversion);
+
+    // BF16 for 1.0: sign=0, exp=01111111 (127), mantissa=0000000
+    // In bits: 0 01111111 0000000 = 0x3F80
+    uint16_t bf16_one = 0x3F80;
+    ASSERT_NEAR(bf16_to_fp32(bf16_one), 1.0f, 1e-6f);
+
+    // BF16 for -2.0: sign=1, exp=10000000 (128), mantissa=0000000
+    // In bits: 1 10000000 0000000 = 0xC000
+    uint16_t bf16_neg2 = 0xC000;
+    ASSERT_NEAR(bf16_to_fp32(bf16_neg2), -2.0f, 1e-6f);
+
+    // BF16 for 0.0
+    uint16_t bf16_zero = 0x0000;
+    ASSERT_NEAR(bf16_to_fp32(bf16_zero), 0.0f, 1e-6f);
+
+    // FP16 via st_fp16_to_fp32 should match the existing fp16_to_fp32
+    uint16_t fp16_one = 0x3C00;  // 1.0 in FP16
+    ASSERT_NEAR(st_fp16_to_fp32(fp16_one), 1.0f, 1e-6f);
+
+    PASS();
+}
+
+void test_hf_weight_name_mapping() {
+    TEST(hf_weight_name_mapping);
+
+    // Test embedding/output mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.embed_tokens.weight"),
+              std::string("token_embd.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.norm.weight"),
+              std::string("output_norm.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("lm_head.weight"),
+              std::string("output.weight"));
+
+    // Test attention layer mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.self_attn.q_proj.weight"),
+              std::string("blk.0.attn_q.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.5.self_attn.k_proj.weight"),
+              std::string("blk.5.attn_k.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.10.self_attn.v_proj.weight"),
+              std::string("blk.10.attn_v.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.self_attn.o_proj.weight"),
+              std::string("blk.0.attn_output.weight"));
+
+    // Test bias mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.self_attn.q_proj.bias"),
+              std::string("blk.0.attn_q.bias"));
+
+    // Test QK-norm mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.3.self_attn.q_norm.weight"),
+              std::string("blk.3.attn_q_norm.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.3.self_attn.k_norm.weight"),
+              std::string("blk.3.attn_k_norm.weight"));
+
+    // Test LayerNorm mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.input_layernorm.weight"),
+              std::string("blk.0.attn_norm.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.post_attention_layernorm.weight"),
+              std::string("blk.0.ffn_norm.weight"));
+
+    // Test FFN mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.mlp.gate_proj.weight"),
+              std::string("blk.0.ffn_gate.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.mlp.up_proj.weight"),
+              std::string("blk.0.ffn_up.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.mlp.down_proj.weight"),
+              std::string("blk.0.ffn_down.weight"));
+
+    // Test Qwen3.5 GatedDeltaNet mappings
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.linear_attn.in_proj_qkv.weight"),
+              std::string("blk.0.attn_qkv.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.linear_attn.in_proj_z.weight"),
+              std::string("blk.0.attn_gate.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.linear_attn.in_proj_b.weight"),
+              std::string("blk.0.ssm_beta.weight"));
+    ASSERT_EQ(hf_to_gguf_tensor_name("model.layers.0.linear_attn.in_proj_a.weight"),
+              std::string("blk.0.ssm_alpha.weight"));
+
+    PASS();
+}
+
+void test_hf_config_parsing() {
+    TEST(hf_config_parsing);
+
+    // Create a minimal config.json
+    const char* config_path = "/tmp/test_hf_config.json";
+    const char* config_json = R"({
+        "architectures": ["Qwen3ForCausalLM"],
+        "model_type": "qwen3",
+        "hidden_size": 1024,
+        "intermediate_size": 2816,
+        "num_hidden_layers": 28,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "max_position_embeddings": 40960,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 1000000.0,
+        "head_dim": 64,
+        "vocab_size": 151936,
+        "tie_word_embeddings": true
+    })";
+
+    FILE* f = fopen(config_path, "w");
+    ASSERT_TRUE(f != nullptr);
+    fputs(config_json, f);
+    fclose(f);
+
+    HFModelConfig cfg;
+    ASSERT_TRUE(cfg.load(config_path));
+
+    ASSERT_EQ(cfg.model_type, std::string("qwen3"));
+    ASSERT_EQ(cfg.architecture_class, std::string("Qwen3ForCausalLM"));
+    ASSERT_EQ(cfg.hidden_size, 1024);
+    ASSERT_EQ(cfg.intermediate_size, 2816);
+    ASSERT_EQ(cfg.num_hidden_layers, 28);
+    ASSERT_EQ(cfg.num_attention_heads, 16);
+    ASSERT_EQ(cfg.num_key_value_heads, 8);
+    ASSERT_EQ(cfg.head_dim, 64);
+    ASSERT_EQ(cfg.vocab_size, 151936);
+    ASSERT_TRUE(cfg.tie_word_embeddings);
+    ASSERT_NEAR(cfg.rms_norm_eps, 1e-6, 1e-12);
+    ASSERT_NEAR(cfg.rope_theta, 1000000.0, 1.0);
+
+    // Test architecture mapping
+    ASSERT_EQ(cfg.get_architecture(), std::string("qwen3"));
+    ASSERT_TRUE(!cfg.is_hybrid());
+
+    remove(config_path);
+
+    PASS();
+}
+
+void test_qwen35_config() {
+    TEST(qwen35_config);
+
+    // Verify Qwen3.5 architecture enables neox RoPE and hybrid flag
+    ModelConfig cfg;
+    cfg.architecture = "qwen35";
+
+    bool rope_neox = (cfg.architecture == "qwen2" ||
+                      cfg.architecture == "qwen3" ||
+                      cfg.architecture == "qwen2moe" ||
+                      cfg.architecture == "qwen35" ||
+                      cfg.architecture == "qwen35moe");
+    ASSERT_TRUE(rope_neox);
+
+    // Verify Qwen3.5-0.8B typical dimensions
+    cfg.hidden_size = 4096;
+    cfg.num_heads = 16;
+    cfg.num_kv_heads = 4;
+    cfg.head_dim = 256;
+    cfg.kv_dim = cfg.head_dim * cfg.num_kv_heads;
+    cfg.intermediate_size = 12288;
+    cfg.num_layers = 36;
+    cfg.rope_theta = 1000000.0f;
+    cfg.max_seq_len = 32768;
+    cfg.is_hybrid = true;
+
+    ASSERT_EQ(cfg.head_dim, 256);
+    ASSERT_EQ(cfg.kv_dim, 1024);
+    ASSERT_EQ(cfg.num_heads / cfg.num_kv_heads, 4);  // GQA ratio
+    ASSERT_TRUE(cfg.is_hybrid);
+
+    // Test HF config architecture mapping for Qwen3.5
+    HFModelConfig hf_cfg;
+    // Simulate qwen3_5_text model type
+    const char* config_path = "/tmp/test_qwen35_config.json";
+    const char* config_json = R"({
+        "architectures": ["Qwen3_5ForCausalLM"],
+        "model_type": "qwen3_5_text",
+        "hidden_size": 4096,
+        "intermediate_size": 12288,
+        "num_hidden_layers": 36,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "vocab_size": 248320,
+        "linear_key_head_dim": 128,
+        "linear_value_head_dim": 128,
+        "layer_types": ["full_attention", "linear_attention", "full_attention"]
+    })";
+
+    FILE* f = fopen(config_path, "w");
+    ASSERT_TRUE(f != nullptr);
+    fputs(config_json, f);
+    fclose(f);
+
+    ASSERT_TRUE(hf_cfg.load(config_path));
+    ASSERT_EQ(hf_cfg.get_architecture(), std::string("qwen35"));
+    ASSERT_TRUE(hf_cfg.is_hybrid());
+    ASSERT_EQ(static_cast<int>(hf_cfg.layer_types.size()), 3);
+    ASSERT_EQ(hf_cfg.layer_types[0], std::string("full_attention"));
+    ASSERT_EQ(hf_cfg.layer_types[1], std::string("linear_attention"));
+    ASSERT_EQ(hf_cfg.layer_types[2], std::string("full_attention"));
+    ASSERT_EQ(hf_cfg.linear_key_head_dim, 128);
+    ASSERT_EQ(hf_cfg.linear_value_head_dim, 128);
+    ASSERT_EQ(hf_cfg.vocab_size, 248320);
+
+    remove(config_path);
+
+    PASS();
+}
+
 // ---- Run all tests ----
 
 int main() {
@@ -1523,6 +1819,14 @@ int main() {
     test_dequantize_q6_k();
     test_dequantize_q4_k();
     test_dequantize_q2_k();
+
+    fprintf(stderr, "\nSafeTensors and HF loader tests:\n");
+    test_safetensors_dtype();
+    test_safetensors_parse();
+    test_bf16_conversion();
+    test_hf_weight_name_mapping();
+    test_hf_config_parsing();
+    test_qwen35_config();
 
     fprintf(stderr, "\n=== Results: %d passed, %d failed ===\n",
             tests_passed, tests_failed);
