@@ -34,7 +34,6 @@ enum GGMLType : uint32_t {
     GGML_TYPE_I32 = 26,
     GGML_TYPE_I64 = 27,
     GGML_TYPE_F64 = 28,
-    GGML_TYPE_IQ1_S = 29,
     GGML_TYPE_BF16 = 30,     // BFloat16: 1 sign + 8 exponent + 7 mantissa
     GGML_TYPE_F8_E4M3 = 37,  // FP8: 1 sign + 4 exponent + 3 mantissa (bias=7, no Inf)
     GGML_TYPE_F8_E5M2 = 38,  // FP8: 1 sign + 5 exponent + 2 mantissa (bias=15)

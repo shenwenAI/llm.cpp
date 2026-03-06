@@ -1344,7 +1344,7 @@ void test_qwen35_layer_types_from_gguf() {
         mapped.push_back(v == 0 ? "full_attention" : "linear_attention");
     }
 
-    ASSERT_EQ(static_cast<int>(mapped.size()), 4);
+    ASSERT_EQ(mapped.size(), 4u);
     ASSERT_EQ(mapped[0], std::string("full_attention"));
     ASSERT_EQ(mapped[1], std::string("linear_attention"));
     ASSERT_EQ(mapped[2], std::string("linear_attention"));
