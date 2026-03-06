@@ -1,11 +1,13 @@
 # llm.cpp
 
-A lightweight C++ LLM inference engine, similar to [llama.cpp](https://github.com/ggerganov/llama.cpp). Loads GGUF model files and runs text generation on **CPU** (with OpenMP) or **GPU** (with CUDA).
+A lightweight C++ LLM inference engine, similar to [llama.cpp](https://github.com/ggerganov/llama.cpp). Loads GGUF model files **or HuggingFace SafeTensors directly** and runs text generation on **CPU** (with OpenMP) or **GPU** (with CUDA).
 You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
 ## Features
 
 - **GGUF model loading** – parses the standard GGUF format used by the llama.cpp ecosystem
+- **HuggingFace direct loading** – load SafeTensors models directly from HuggingFace directories (F32/F16/BF16) without conversion
 - **LLaMA-style transformer** – full inference with RoPE, GQA, SwiGLU, RMS normalization
+- **Qwen3.5 hybrid architecture** – supports Gated Delta Network + attention hybrid layers
 - **CPU backend** – optimized with OpenMP multi-threading
 - **GPU backend** – CUDA kernels with cuBLAS matrix multiplication; all installed GPUs are enumerated at startup
 - **Broad quantization support** – F32, F16, FP8 (E4M3/E5M2), Q4_0, Q8_0 fused kernels; Q2_K, Q3_K, Q4_K, Q5_K, Q6_K dequantization fallback (covers the most popular GGUF model variants)
@@ -13,7 +15,7 @@ You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
 - **Interactive mode** – chat-style conversation loop
 - **Customizable system prompt** – set via `-s` / `--system`
 - **OpenAI-compatible HTTP API** – run as a local server (`--server`) that OpenWebUI and other frontends can connect to via `/v1/chat/completions`
-- **Custom model path** – load any GGUF model via `-m <path>`
+- **Custom model path** – load any GGUF model or HuggingFace directory via `-m <path>`
 
 ## Build
 
@@ -64,8 +66,11 @@ Or open the folder in Visual Studio (CMake is supported natively) and build from
 ## Usage
 
 ```bash
-# Basic generation
+# Basic generation (GGUF format)
 ./llm -m /path/to/model.gguf -p "Once upon a time"
+
+# Load HuggingFace model directly (SafeTensors format, no conversion needed)
+./llm -m /path/to/Qwen3.5-0.8B/ -p "Hello, world"
 
 # With GPU acceleration
 ./llm -m model.gguf --gpu -p "Explain quantum computing"
@@ -93,7 +98,7 @@ Or open the folder in Visual Studio (CMake is supported natively) and build from
 
 ```
 Required:
-  -m, --model <path>       Path to GGUF model file
+  -m, --model <path>       Path to GGUF model file or HuggingFace model directory
 
 Generation:
   -p, --prompt <text>      Input prompt (default: "Hello")
@@ -184,11 +189,34 @@ which are now supported via the dequantize fallback path.
 Any GGUF model with LLaMA-style architecture works, including:
 
 - Deepseek / Deepseek v3.1
-- Qwen / Qwen3 / Qwen3.5
+- Qwen / Qwen3
+- **Qwen3.5 Dense** (0.8B, 2B, 4B, 9B, 27B) – hybrid GatedDeltaNet + attention
+- **Qwen3.5 MoE** (35B-A3B, 122B-A10B, 397B-A17B) – hybrid with Mixture of Experts
 - Minimax / Minimax2.5
 - And other LLaMA-compatible models
 
 Download models from [Hugging Face](https://huggingface.co/models?search=gguf) in GGUF format.
+
+### HuggingFace Direct Loading (SafeTensors)
+
+You can also load HuggingFace model directories directly without converting to GGUF:
+
+```bash
+# Download a model from HuggingFace
+pip install huggingface_hub
+huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
+
+# Run inference directly from the HuggingFace directory
+./llm -m ./Qwen3-0.6B/ -p "Hello, world"
+```
+
+Supported HuggingFace formats:
+- **SafeTensors** (`.safetensors`) – F32, F16, and BF16 weights are dequantized to F32 at load time
+- **Single and sharded** models (e.g., `model.safetensors` or `model-00001-of-00002.safetensors`)
+- Reads `config.json` for model architecture and `tokenizer.json` for tokenization
+
+> **Note:** HuggingFace models are loaded as F32, so they use more memory than quantized GGUF
+> models. For production use, GGUF with Q4_K or Q8_0 quantization is recommended.
 
 ## Project Structure
 
@@ -196,8 +224,10 @@ Download models from [Hugging Face](https://huggingface.co/models?search=gguf) i
 src/
   main.cpp          CLI entry point and generation loop
   gguf.h            GGUF file format parser
+  safetensors.h     SafeTensors file format parser (HuggingFace)
+  hf_loader.h       HuggingFace model directory loader
   tensor.h          Tensor operations (CPU + GPU dispatch)
-  model.h           LLaMA transformer model
+  model.h           LLaMA transformer model (+ Qwen3.5 hybrid)
   tokenizer.h       BPE tokenizer
   sampler.h         Token sampling strategies
   server.h          Minimal OpenAI-compatible HTTP server

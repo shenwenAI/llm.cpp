@@ -34,6 +34,7 @@ enum GGMLType : uint32_t {
     GGML_TYPE_I32 = 26,
     GGML_TYPE_I64 = 27,
     GGML_TYPE_F64 = 28,
+    GGML_TYPE_BF16 = 30,     // BFloat16: 1 sign + 8 exponent + 7 mantissa
     GGML_TYPE_F8_E4M3 = 37,  // FP8: 1 sign + 4 exponent + 3 mantissa (bias=7, no Inf)
     GGML_TYPE_F8_E5M2 = 38,  // FP8: 1 sign + 5 exponent + 2 mantissa (bias=15)
 };
@@ -77,6 +78,7 @@ inline size_t ggml_type_size(GGMLType type) {
         case GGML_TYPE_I32:      return 4;
         case GGML_TYPE_I64:      return 8;
         case GGML_TYPE_F64:      return 8;
+        case GGML_TYPE_BF16:     return 2;  // 2 bytes per element
         case GGML_TYPE_F8_E4M3:  return 1;  // 1 byte per element
         case GGML_TYPE_F8_E5M2:  return 1;  // 1 byte per element
         default: return 0;
@@ -88,6 +90,7 @@ inline size_t ggml_block_size(GGMLType type) {
     switch (type) {
         case GGML_TYPE_F32:
         case GGML_TYPE_F16:
+        case GGML_TYPE_BF16:
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:
@@ -134,6 +137,7 @@ inline const char* ggml_type_name(GGMLType type) {
         case GGML_TYPE_I32:  return "I32";
         case GGML_TYPE_I64:  return "I64";
         case GGML_TYPE_F64:  return "F64";
+        case GGML_TYPE_BF16: return "BF16";
         case GGML_TYPE_F8_E4M3: return "F8_E4M3";
         case GGML_TYPE_F8_E5M2: return "F8_E5M2";
         default: return "UNKNOWN";
@@ -285,6 +289,19 @@ public:
         auto it = metadata.find(key);
         if (it == metadata.end()) return default_val;
         return it->second.to_string();
+    }
+
+    // Get metadata as integer array (for e.g. layer_types)
+    std::vector<int64_t> get_i64_array(const std::string& key) const {
+        std::vector<int64_t> result;
+        auto it = metadata.find(key);
+        if (it == metadata.end()) return result;
+        if (it->second.type != GGUF_TYPE_ARRAY) return result;
+        result.reserve(it->second.arr.size());
+        for (const auto& v : it->second.arr) {
+            result.push_back(v.to_int());
+        }
+        return result;
     }
 
 private:
