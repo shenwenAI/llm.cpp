@@ -240,11 +240,15 @@ public:
         const auto& info = it->second;
 
         if (file_entries.empty()) {
-            // Single file
-            return owned_data.data() + 8 + header_size + info.data_start;
+            // Single file - validate bounds
+            uint64_t data_offset = 8 + header_size + info.data_start;
+            if (data_offset + info.num_bytes() > owned_data.size()) {
+                fprintf(stderr, "SafeTensors: tensor '%s' data out of bounds\n",
+                        name.c_str());
+                return nullptr;
+            }
+            return owned_data.data() + data_offset;
         } else {
-            // Multi-file: data_end encodes file index in upper bits
-            // We use a simpler approach: store file index in the tensor info
             return nullptr;  // Use get_tensor_data_with_info instead
         }
     }
@@ -252,11 +256,19 @@ public:
     // Get tensor data with full info
     const void* get_tensor_data(const SafeTensorInfo& info, size_t file_idx) const {
         if (file_entries.empty()) {
-            return owned_data.data() + 8 + header_size + info.data_start;
+            uint64_t data_offset = 8 + header_size + info.data_start;
+            if (data_offset + info.num_bytes() > owned_data.size()) {
+                return nullptr;
+            }
+            return owned_data.data() + data_offset;
         }
         if (file_idx < file_entries.size()) {
             const auto& entry = file_entries[file_idx];
-            return entry.data_ptr + 8 + entry.header_size + info.data_start;
+            uint64_t data_offset = 8 + entry.header_size + info.data_start;
+            if (data_offset + info.num_bytes() > entry.data.size()) {
+                return nullptr;
+            }
+            return entry.data_ptr + data_offset;
         }
         return nullptr;
     }

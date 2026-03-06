@@ -646,7 +646,10 @@ private:
         // time), so computing once here avoids a heap allocation on every
         // forward() call.  When partial_rotary_factor < 1.0 (e.g. Qwen3.5
         // uses 0.25), only the first rope_dim positions get RoPE.
-        int rope_dim = config.rope_dim > 0 ? config.rope_dim : config.head_dim;
+        if (config.rope_dim == 0) {
+            config.rope_dim = config.head_dim;
+        }
+        int rope_dim = config.rope_dim;
         int half_rope = rope_dim / 2;
         rope_freqs.resize(half_rope);
         for (int i = 0; i < half_rope; i++) {
