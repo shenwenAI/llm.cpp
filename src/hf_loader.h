@@ -258,15 +258,72 @@ struct HFModelConfig {
     // Map HF model_type to GGUF architecture string.
     // HF uses underscores in compound types (e.g., "qwen3_5_text") while GGUF
     // uses concatenated names (e.g., "qwen35") per the llama.cpp convention.
+    // See: https://github.com/ggml-org/llama.cpp/blob/master/src/llama-arch.cpp
     std::string get_architecture() const {
+        // Qwen family
         if (model_type == "qwen3_5_text" || model_type == "qwen3_5") return "qwen35";
         if (model_type == "qwen3_5_moe_text" || model_type == "qwen3_5_moe") return "qwen35moe";
         if (model_type == "qwen3") return "qwen3";
         if (model_type == "qwen2") return "qwen2";
         if (model_type == "qwen2_moe") return "qwen2moe";
+
+        // LLaMA-compatible (standard transformer with interleaved RoPE)
         if (model_type == "llama") return "llama";
         if (model_type == "mistral") return "llama";
+
+        // DeepSeek family
         if (model_type == "deepseek_v2") return "deepseek2";
+        if (model_type == "deepseek_v3") return "deepseek2";
+
+        // Gemma family (Google)
+        if (model_type == "gemma") return "gemma";
+        if (model_type == "gemma2") return "gemma2";
+        if (model_type == "gemma3") return "gemma3";
+
+        // Phi family (Microsoft)
+        if (model_type == "phi") return "phi2";
+        if (model_type == "phi3") return "phi3";
+        if (model_type == "phi3small") return "phi3";
+        if (model_type == "phimoe") return "phimoe";
+
+        // InternLM family (Shanghai AI Lab)
+        if (model_type == "internlm2") return "internlm2";
+        if (model_type == "internlm3") return "internlm2";
+
+        // ChatGLM family (Zhipu AI / GLM)
+        if (model_type == "chatglm") return "chatglm";
+        if (model_type == "glm4") return "glm4";
+
+        // Cohere family (Command-R)
+        if (model_type == "cohere") return "command-r";
+        if (model_type == "cohere2") return "cohere2";
+
+        // StarCoder2 (BigCode)
+        if (model_type == "starcoder2") return "starcoder2";
+
+        // MiniCPM (OpenBMB)
+        if (model_type == "minicpm") return "minicpm";
+        if (model_type == "minicpm3") return "minicpm3";
+
+        // SmolLM (HuggingFace)
+        if (model_type == "smollm3") return "smollm3";
+
+        // Exaone (LG)
+        if (model_type == "exaone") return "exaone";
+
+        // Nemotron (NVIDIA)
+        if (model_type == "nemotron") return "nemotron";
+
+        // Falcon-H1 (Technology Innovation Institute)
+        if (model_type == "falcon_h1") return "falcon-h1";
+
+        // OLMO (AI2)
+        if (model_type == "olmo") return "olmo";
+        if (model_type == "olmo2") return "olmo2";
+
+        // GPT-NeoX compatible
+        if (model_type == "gpt_neox") return "gpt_neox";
+
         return model_type;
     }
 

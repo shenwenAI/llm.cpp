@@ -423,9 +423,15 @@ private:
 
         config.kv_dim = config.head_dim * config.num_kv_heads;
 
-        // Use neox-style (halved) RoPE for Qwen models
+        // Use neox-style (halved) RoPE for Qwen and certain other models
         if (arch == "qwen2" || arch == "qwen3" || arch == "qwen2moe" ||
-            arch == "qwen35" || arch == "qwen35moe") {
+            arch == "qwen35" || arch == "qwen35moe" ||
+            arch == "starcoder2" || arch == "phi3" || arch == "phi2") {
+            config.rope_neox = true;
+        }
+
+        // GPT-NeoX / Stablelm / CodeShell also use neox RoPE
+        if (arch == "gpt_neox" || arch == "stablelm" || arch == "codeshell") {
             config.rope_neox = true;
         }
 

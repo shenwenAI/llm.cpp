@@ -1593,6 +1593,190 @@ void test_dequantize_q2_k() {
     PASS();
 }
 
+// Test fused Q6_K matmul: dequantize+accumulate vs dequantize-then-matmul
+void test_cpu_matmul_transposed_q6_k() {
+    TEST(cpu_matmul_transposed_q6_k);
+
+    // Build a 2-row weight matrix in Q6_K format (K=256, N=2).
+    // Row 0: all quant values 0 (which encodes -32 after offset), scales=1, d=1.0
+    //        → dequantized value = 1.0 * 1 * (0-32) = -32
+    // Row 1: same
+    const int N = 2, K = 256;
+    const size_t block_bytes = 210;
+
+    std::vector<uint8_t> w(N * block_bytes, 0);
+    for (int row = 0; row < N; row++) {
+        uint8_t* blk = w.data() + row * block_bytes;
+        // scales at [192..207]: set to 1
+        for (int i = 0; i < 16; i++) blk[192 + i] = 1;
+        // d at [208..209]: 1.0 in f16 = 0x3C00
+        uint16_t d16 = 0x3C00;
+        memcpy(blk + 208, &d16, 2);
+    }
+
+    // Input: x = all 1.0 → dot product = 256 * (-32) = -8192
+    std::vector<float> x(K, 1.0f);
+    float out_fused[2] = {};
+    cpu_matmul_transposed_q6_k(out_fused, x.data(), w.data(), N, K);
+
+    // Cross-check: dequantize then F32 matmul
+    std::vector<float> w_f32(static_cast<size_t>(N) * K);
+    for (int row = 0; row < N; row++) {
+        dequantize_q6_k(w.data() + row * block_bytes,
+                        w_f32.data() + row * K, K);
+    }
+    float out_ref[2] = {};
+    cpu_matmul_transposed(out_ref, x.data(), w_f32.data(), N, K);
+
+    ASSERT_NEAR(out_fused[0], out_ref[0], 1e-3f);
+    ASSERT_NEAR(out_fused[1], out_ref[1], 1e-3f);
+    ASSERT_NEAR(out_fused[0], -8192.0f, 1e-1f);
+
+    PASS();
+}
+
+// Test fused Q4_K matmul: dequantize+accumulate vs dequantize-then-matmul
+void test_cpu_matmul_transposed_q4_k() {
+    TEST(cpu_matmul_transposed_q4_k);
+
+    // Build a 2-row weight matrix in Q4_K format (K=256, N=2).
+    // Same setup as test_dequantize_q4_k: d=1.0, dmin=0, scales[0..3]=1,
+    // qs = all 0x88 (nibble 8).
+    const int N = 2, K = 256;
+    const size_t block_bytes = 144;
+
+    std::vector<uint8_t> w(N * block_bytes, 0);
+    for (int row = 0; row < N; row++) {
+        uint8_t* blk = w.data() + row * block_bytes;
+        uint16_t d16 = 0x3C00, dmin16 = 0x0000;
+        memcpy(blk + 0, &d16,    2);
+        memcpy(blk + 2, &dmin16, 2);
+        blk[4] = 1; blk[5] = 1; blk[6] = 1; blk[7] = 1;
+        for (int i = 16; i < 144; i++) blk[i] = 0x88;
+    }
+
+    // Input: x = all 1.0
+    std::vector<float> x(K, 1.0f);
+    float out_fused[2] = {};
+    cpu_matmul_transposed_q4_k(out_fused, x.data(), w.data(), N, K);
+
+    // Cross-check: dequantize then F32 matmul
+    std::vector<float> w_f32(static_cast<size_t>(N) * K);
+    for (int row = 0; row < N; row++) {
+        dequantize_q4_k(w.data() + row * block_bytes,
+                        w_f32.data() + row * K, K);
+    }
+    float out_ref[2] = {};
+    cpu_matmul_transposed(out_ref, x.data(), w_f32.data(), N, K);
+
+    ASSERT_NEAR(out_fused[0], out_ref[0], 1e-3f);
+    ASSERT_NEAR(out_fused[1], out_ref[1], 1e-3f);
+
+    PASS();
+}
+
+// Test that the Compute dispatcher routes Q6_K/Q4_K to fused kernels
+void test_compute_q_kquant_dispatch() {
+    TEST(compute_q_kquant_dispatch);
+
+    Compute compute(Backend::CPU);
+
+    // Test Q6_K dispatch
+    const int K = 256;
+    const size_t q6_block_bytes = 210;
+    std::vector<uint8_t> w6(q6_block_bytes, 0);
+    for (int i = 0; i < 16; i++) w6[192 + i] = 1;
+    uint16_t d16 = 0x3C00;
+    memcpy(w6.data() + 208, &d16, 2);
+
+    std::vector<float> x(K, 1.0f);
+    float out_dispatch = 0.0f;
+    QuantWeight qw6 = {w6.data(), GGML_TYPE_Q6_K};
+    compute.matmul_transposed_q(&out_dispatch, x.data(), qw6, 1, K);
+
+    float out_fused = 0.0f;
+    cpu_matmul_transposed_q6_k(&out_fused, x.data(), w6.data(), 1, K);
+    ASSERT_NEAR(out_dispatch, out_fused, 1e-6f);
+
+    // Test Q4_K dispatch
+    const size_t q4_block_bytes = 144;
+    std::vector<uint8_t> w4(q4_block_bytes, 0);
+    uint16_t dmin16 = 0x0000;
+    memcpy(w4.data() + 0, &d16, 2);
+    memcpy(w4.data() + 2, &dmin16, 2);
+    w4[4] = 1; w4[5] = 1; w4[6] = 1; w4[7] = 1;
+    for (int i = 16; i < 144; i++) w4[i] = 0x88;
+
+    float out4_dispatch = 0.0f;
+    QuantWeight qw4 = {w4.data(), GGML_TYPE_Q4_K};
+    compute.matmul_transposed_q(&out4_dispatch, x.data(), qw4, 1, K);
+
+    float out4_fused = 0.0f;
+    cpu_matmul_transposed_q4_k(&out4_fused, x.data(), w4.data(), 1, K);
+    ASSERT_NEAR(out4_dispatch, out4_fused, 1e-6f);
+
+    PASS();
+}
+
+// Test expanded HF model_type → GGUF architecture mappings
+void test_expanded_architecture_mappings() {
+    TEST(expanded_architecture_mappings);
+
+    HFModelConfig cfg;
+
+    // Existing mappings (verify still work)
+    cfg.model_type = "llama"; ASSERT_EQ(cfg.get_architecture(), std::string("llama"));
+    cfg.model_type = "mistral"; ASSERT_EQ(cfg.get_architecture(), std::string("llama"));
+    cfg.model_type = "qwen2"; ASSERT_EQ(cfg.get_architecture(), std::string("qwen2"));
+    cfg.model_type = "qwen3"; ASSERT_EQ(cfg.get_architecture(), std::string("qwen3"));
+    cfg.model_type = "deepseek_v2"; ASSERT_EQ(cfg.get_architecture(), std::string("deepseek2"));
+
+    // New Gemma mappings
+    cfg.model_type = "gemma"; ASSERT_EQ(cfg.get_architecture(), std::string("gemma"));
+    cfg.model_type = "gemma2"; ASSERT_EQ(cfg.get_architecture(), std::string("gemma2"));
+    cfg.model_type = "gemma3"; ASSERT_EQ(cfg.get_architecture(), std::string("gemma3"));
+
+    // New DeepSeek V3 mapping
+    cfg.model_type = "deepseek_v3"; ASSERT_EQ(cfg.get_architecture(), std::string("deepseek2"));
+
+    // New Phi mappings
+    cfg.model_type = "phi"; ASSERT_EQ(cfg.get_architecture(), std::string("phi2"));
+    cfg.model_type = "phi3"; ASSERT_EQ(cfg.get_architecture(), std::string("phi3"));
+
+    // New InternLM mapping
+    cfg.model_type = "internlm2"; ASSERT_EQ(cfg.get_architecture(), std::string("internlm2"));
+    cfg.model_type = "internlm3"; ASSERT_EQ(cfg.get_architecture(), std::string("internlm2"));
+
+    // New ChatGLM/GLM4 mappings
+    cfg.model_type = "chatglm"; ASSERT_EQ(cfg.get_architecture(), std::string("chatglm"));
+    cfg.model_type = "glm4"; ASSERT_EQ(cfg.get_architecture(), std::string("glm4"));
+
+    // New Cohere mappings
+    cfg.model_type = "cohere"; ASSERT_EQ(cfg.get_architecture(), std::string("command-r"));
+    cfg.model_type = "cohere2"; ASSERT_EQ(cfg.get_architecture(), std::string("cohere2"));
+
+    // New StarCoder2 mapping
+    cfg.model_type = "starcoder2"; ASSERT_EQ(cfg.get_architecture(), std::string("starcoder2"));
+
+    // New MiniCPM mapping
+    cfg.model_type = "minicpm"; ASSERT_EQ(cfg.get_architecture(), std::string("minicpm"));
+
+    // New SmolLM3 mapping
+    cfg.model_type = "smollm3"; ASSERT_EQ(cfg.get_architecture(), std::string("smollm3"));
+
+    // New Exaone mapping
+    cfg.model_type = "exaone"; ASSERT_EQ(cfg.get_architecture(), std::string("exaone"));
+
+    // New OLMO mappings
+    cfg.model_type = "olmo"; ASSERT_EQ(cfg.get_architecture(), std::string("olmo"));
+    cfg.model_type = "olmo2"; ASSERT_EQ(cfg.get_architecture(), std::string("olmo2"));
+
+    // Unknown models pass through unchanged
+    cfg.model_type = "some_unknown"; ASSERT_EQ(cfg.get_architecture(), std::string("some_unknown"));
+
+    PASS();
+}
+
 // ---- SafeTensors and HF loader tests ----
 
 #include "safetensors.h"
@@ -2116,6 +2300,11 @@ int main() {
     test_dequantize_q4_k();
     test_dequantize_q2_k();
 
+    fprintf(stderr, "\nFused K-quant matmul tests:\n");
+    test_cpu_matmul_transposed_q6_k();
+    test_cpu_matmul_transposed_q4_k();
+    test_compute_q_kquant_dispatch();
+
     fprintf(stderr, "\nSafeTensors and HF loader tests:\n");
     test_safetensors_dtype();
     test_safetensors_parse();
@@ -2127,6 +2316,7 @@ int main() {
     test_qwen35_vl_nested_config();
     test_moe_weight_name_mapping();
     test_partial_rotary_factor();
+    test_expanded_architecture_mappings();
 
     fprintf(stderr, "\n=== Results: %d passed, %d failed ===\n",
             tests_passed, tests_failed);
