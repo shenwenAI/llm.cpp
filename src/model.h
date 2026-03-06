@@ -197,124 +197,108 @@ public:
         for (int l = 0; l < config.num_layers; l++) {
             const LayerWeights& lw = weights.layers[l];
 
-            // Check if this is a linear attention (GatedDeltaNet) layer
-            if (lw.layer_type == "linear_attention") {
-                // Qwen3.5 GatedDeltaNet layer - simplified forward pass
-                // For full linear attention support, we fall through to
-                // standard attention path using the fused QKV weights.
-                // This allows the model to load and run with degraded quality
-                // on linear attention layers until full GatedDeltaNet is implemented.
+            // Attention norm (applies to both full and linear attention layers)
+            compute.rmsnorm(xb.data(), x.data(), lw.attn_norm, dim,
+                            config.rms_norm_eps);
 
-                // Attention norm
-                compute.rmsnorm(xb.data(), x.data(), lw.attn_norm, dim,
-                                config.rms_norm_eps);
+            // Determine if this is a standard attention or linear attention layer
+            bool is_full_attention = (lw.layer_type != "linear_attention") ||
+                                     lw.wq.valid();
 
-                // For linear attention layers that have separate Q/K/V weights
-                // (converted from QKV), use standard attention as fallback
-                if (lw.wq.valid()) {
-                    goto standard_attention;
+            if (is_full_attention) {
+                // Standard transformer attention (or fallback for linear layers with Q/K/V)
+
+                // QKV projections
+                compute.matmul_transposed_q(q.data(), xb.data(), lw.wq,
+                                            num_heads * head_dim, dim);
+                compute.matmul_transposed_q(k.data(), xb.data(), lw.wk,
+                                            num_kv_heads * head_dim, dim);
+                compute.matmul_transposed_q(v.data(), xb.data(), lw.wv,
+                                            num_kv_heads * head_dim, dim);
+
+                // Add QKV bias (Qwen3-style models)
+                if (lw.bq) compute.add(q.data(), q.data(), lw.bq, num_heads * head_dim);
+                if (lw.bk) compute.add(k.data(), k.data(), lw.bk, kv_dim);
+                if (lw.bv) compute.add(v.data(), v.data(), lw.bv, kv_dim);
+
+                // Apply QK-norm: per-head RMSNorm on Q and K (Qwen3-style)
+                if (lw.attn_q_norm) {
+                    #ifdef LLM_USE_OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int h = 0; h < num_heads; h++) {
+                        compute.rmsnorm(q.data() + h * head_dim,
+                                        q.data() + h * head_dim,
+                                        lw.attn_q_norm, head_dim,
+                                        config.rms_norm_eps);
+                    }
+                }
+                if (lw.attn_k_norm) {
+                    #ifdef LLM_USE_OPENMP
+                    #pragma omp parallel for
+                    #endif
+                    for (int h = 0; h < num_kv_heads; h++) {
+                        compute.rmsnorm(k.data() + h * head_dim,
+                                        k.data() + h * head_dim,
+                                        lw.attn_k_norm, head_dim,
+                                        config.rms_norm_eps);
+                    }
                 }
 
-                // Skip this layer's attention (identity) if no weights
-                // Just apply FFN
-                goto ffn_block;
-            }
+                // Apply RoPE (separate Q and K dims for GQA correctness)
+                compute.rope(q.data(), k.data(), num_heads * head_dim,
+                             num_kv_heads * head_dim, head_dim,
+                             pos, config.rope_theta, rope_freqs.data(), config.rope_neox);
 
-standard_attention:
-            // Attention norm
-            if (lw.layer_type != "linear_attention") {
-                compute.rmsnorm(xb.data(), x.data(), lw.attn_norm, dim,
-                                config.rms_norm_eps);
-            }
+                // Store K, V in cache
+                memcpy(kv_cache.key(l, pos), k.data(), kv_dim * sizeof(float));
+                memcpy(kv_cache.value(l, pos), v.data(), kv_dim * sizeof(float));
 
-            // QKV projections
-            compute.matmul_transposed_q(q.data(), xb.data(), lw.wq,
-                                        num_heads * head_dim, dim);
-            compute.matmul_transposed_q(k.data(), xb.data(), lw.wk,
-                                        num_kv_heads * head_dim, dim);
-            compute.matmul_transposed_q(v.data(), xb.data(), lw.wv,
-                                        num_kv_heads * head_dim, dim);
-
-            // Add QKV bias (Qwen3-style models)
-            if (lw.bq) compute.add(q.data(), q.data(), lw.bq, num_heads * head_dim);
-            if (lw.bk) compute.add(k.data(), k.data(), lw.bk, kv_dim);
-            if (lw.bv) compute.add(v.data(), v.data(), lw.bv, kv_dim);
-
-            // Apply QK-norm: per-head RMSNorm on Q and K (Qwen3-style)
-            if (lw.attn_q_norm) {
+                // Multi-head attention
                 #ifdef LLM_USE_OPENMP
                 #pragma omp parallel for
                 #endif
                 for (int h = 0; h < num_heads; h++) {
-                    compute.rmsnorm(q.data() + h * head_dim,
-                                    q.data() + h * head_dim,
-                                    lw.attn_q_norm, head_dim,
-                                    config.rms_norm_eps);
-                }
-            }
-            if (lw.attn_k_norm) {
-                #ifdef LLM_USE_OPENMP
-                #pragma omp parallel for
-                #endif
-                for (int h = 0; h < num_kv_heads; h++) {
-                    compute.rmsnorm(k.data() + h * head_dim,
-                                    k.data() + h * head_dim,
-                                    lw.attn_k_norm, head_dim,
-                                    config.rms_norm_eps);
-                }
-            }
+                    float* q_h = q.data() + h * head_dim;
+                    float* att_h = att.data() + h * config.max_seq_len;
+                    int kv_h = h / kv_mul; // GQA: map query head to kv head
 
-            // Apply RoPE (separate Q and K dims for GQA correctness)
-            compute.rope(q.data(), k.data(), num_heads * head_dim,
-                         num_kv_heads * head_dim, head_dim,
-                         pos, config.rope_theta, rope_freqs.data(), config.rope_neox);
-
-            // Store K, V in cache
-            memcpy(kv_cache.key(l, pos), k.data(), kv_dim * sizeof(float));
-            memcpy(kv_cache.value(l, pos), v.data(), kv_dim * sizeof(float));
-
-            // Multi-head attention
-            #ifdef LLM_USE_OPENMP
-            #pragma omp parallel for
-            #endif
-            for (int h = 0; h < num_heads; h++) {
-                float* q_h = q.data() + h * head_dim;
-                float* att_h = att.data() + h * config.max_seq_len;
-                int kv_h = h / kv_mul; // GQA: map query head to kv head
-
-                // Compute attention scores: Q * K^T / sqrt(head_dim)
-                for (int t = 0; t <= pos; t++) {
-                    float* k_t = kv_cache.key(l, t) + kv_h * head_dim;
-                    float score = 0.0f;
-                    for (int d = 0; d < head_dim; d++) {
-                        score += q_h[d] * k_t[d];
+                    // Compute attention scores: Q * K^T / sqrt(head_dim)
+                    for (int t = 0; t <= pos; t++) {
+                        float* k_t = kv_cache.key(l, t) + kv_h * head_dim;
+                        float score = 0.0f;
+                        for (int d = 0; d < head_dim; d++) {
+                            score += q_h[d] * k_t[d];
+                        }
+                        att_h[t] = score / sqrtf(static_cast<float>(head_dim));
                     }
-                    att_h[t] = score / sqrtf(static_cast<float>(head_dim));
-                }
 
-                // Softmax over attention scores
-                compute.softmax(att_h, pos + 1);
+                    // Softmax over attention scores
+                    compute.softmax(att_h, pos + 1);
 
-                // Weighted sum of values
-                float* out_h = xb2.data() + h * head_dim;
-                memset(out_h, 0, head_dim * sizeof(float));
-                for (int t = 0; t <= pos; t++) {
-                    float* v_t = kv_cache.value(l, t) + kv_h * head_dim;
-                    float w = att_h[t];
-                    for (int d = 0; d < head_dim; d++) {
-                        out_h[d] += w * v_t[d];
+                    // Weighted sum of values
+                    float* out_h = xb2.data() + h * head_dim;
+                    memset(out_h, 0, head_dim * sizeof(float));
+                    for (int t = 0; t <= pos; t++) {
+                        float* v_t = kv_cache.value(l, t) + kv_h * head_dim;
+                        float w = att_h[t];
+                        for (int d = 0; d < head_dim; d++) {
+                            out_h[d] += w * v_t[d];
+                        }
                     }
                 }
+
+                // Output projection
+                compute.matmul_transposed_q(xb.data(), xb2.data(), lw.wo, dim,
+                                            num_heads * head_dim);
+
+                // Residual connection
+                compute.add(x.data(), x.data(), xb.data(), dim);
             }
+            // else: Qwen3.5 GatedDeltaNet linear attention layer without Q/K/V
+            //       weights - skip attention (identity residual) until full
+            //       GatedDeltaNet implementation is added.
 
-            // Output projection
-            compute.matmul_transposed_q(xb.data(), xb2.data(), lw.wo, dim,
-                                        num_heads * head_dim);
-
-            // Residual connection
-            compute.add(x.data(), x.data(), xb.data(), dim);
-
-ffn_block:
             // FFN norm
             compute.rmsnorm(xb.data(), x.data(), lw.ffn_norm, dim,
                             config.rms_norm_eps);

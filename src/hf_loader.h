@@ -212,9 +212,10 @@ struct HFModelConfig {
         return hidden_size > 0 && num_hidden_layers > 0 && num_attention_heads > 0;
     }
 
-    // Determine the GGUF-compatible architecture string
+    // Map HF model_type to GGUF architecture string.
+    // HF uses underscores in compound types (e.g., "qwen3_5_text") while GGUF
+    // uses concatenated names (e.g., "qwen35") per the llama.cpp convention.
     std::string get_architecture() const {
-        // Map HF model_type to GGUF architecture string
         if (model_type == "qwen3_5_text" || model_type == "qwen3_5") return "qwen35";
         if (model_type == "qwen3") return "qwen3";
         if (model_type == "qwen2") return "qwen2";
