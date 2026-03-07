@@ -17,6 +17,10 @@
 #include "hf_loader.h"
 #include "tokenizer.h"
 
+// ---- GatedDeltaNet helpers ----
+
+inline float sigmoid_f(float x) { return 1.0f / (1.0f + expf(-x)); }
+
 // ---- Model configuration ----
 
 struct ModelConfig {
@@ -80,6 +84,7 @@ struct LayerWeights {
     QuantWeight w_ssm_alpha;        // [num_v_heads, hidden_size]
     float* ssm_a = nullptr;         // [num_v_heads] (decay parameter)
     QuantWeight w_ssm_conv1d;       // [value_dim, 1, conv_width]
+    float* ssm_conv1d_data = nullptr; // [value_dim * conv_width] dequantized
     QuantWeight w_ssm_dt;           // [num_v_heads, hidden_size]
     QuantWeight w_ssm_out;          // [hidden_size, value_dim]
     float* ssm_norm = nullptr;      // [value_dim]
@@ -123,6 +128,44 @@ struct KVCache {
     }
 };
 
+// ---- GatedDeltaNet recurrent state (per linear attention layer) ----
+
+struct LinearAttentionState {
+    std::vector<float> recurrent;     // [num_v_heads, key_head_dim, value_head_dim]
+    std::vector<float> conv_state;    // [value_dim, conv_width]
+    int num_v_heads = 0;
+    int key_head_dim = 0;
+    int value_head_dim = 0;
+    int conv_width = 0;
+    int value_dim = 0;
+
+    void init(int nv, int kd, int vd, int cw) {
+        num_v_heads = nv;
+        key_head_dim = kd;
+        value_head_dim = vd;
+        conv_width = cw;
+        value_dim = nv * vd;
+        recurrent.assign(static_cast<size_t>(nv) * kd * vd, 0.0f);
+        conv_state.assign(static_cast<size_t>(value_dim) * cw, 0.0f);
+    }
+
+    void clear() {
+        std::fill(recurrent.begin(), recurrent.end(), 0.0f);
+        std::fill(conv_state.begin(), conv_state.end(), 0.0f);
+    }
+
+    // Pointer to recurrent state for head h: [key_head_dim, value_head_dim]
+    float* head_state(int h) {
+        return recurrent.data() +
+               static_cast<size_t>(h) * key_head_dim * value_head_dim;
+    }
+
+    // Pointer to conv history for channel d: [conv_width]
+    float* channel_conv(int d) {
+        return conv_state.data() + static_cast<size_t>(d) * conv_width;
+    }
+};
+
 // ---- Transformer model ----
 
 class Model {
@@ -155,7 +198,24 @@ public:
     std::vector<float> logits;  // [vocab_size]
     std::vector<float> rope_freqs; // [head_dim/2] precomputed RoPE frequencies
 
+    // GatedDeltaNet recurrent states and scratch buffers (hybrid models only)
+    std::vector<LinearAttentionState> linear_states;  // per-layer state
+    std::vector<float> gdn_qkv;      // [key_dim * 2 + value_dim]
+    std::vector<float> gdn_z;        // [value_dim] gate
+    std::vector<float> gdn_beta;     // [num_v_heads]
+    std::vector<float> gdn_alpha;    // [num_v_heads]
+    std::vector<float> gdn_dt;       // [num_v_heads]
+    std::vector<float> gdn_y;        // [value_dim] output
+    std::vector<float> gdn_conv_out; // [value_dim] conv output
+    std::vector<float> gdn_pred;     // [value_head_dim] prediction buffer
+
     explicit Model(Backend backend) : compute(backend) {}
+
+    // Clear all recurrent state (KV cache + linear attention states)
+    void clear_state() {
+        kv_cache.clear();
+        for (auto& s : linear_states) s.clear();
+    }
 
     bool load(const std::string& model_path, int context_override = 0) {
         fprintf(stderr, "Loading model from: %s\n", model_path.c_str());
@@ -306,10 +366,153 @@ public:
 
                 // Residual connection
                 compute.add(x.data(), x.data(), xb.data(), dim);
+            } else if (l < static_cast<int>(linear_states.size()) &&
+                       linear_states[l].num_v_heads > 0 && lw.w_qkv.valid()) {
+                // Qwen3.5 GatedDeltaNet linear attention layer
+                auto& ls = linear_states[l];
+                int n_v_heads = ls.num_v_heads;
+                int k_hd = ls.key_head_dim;
+                int v_hd = ls.value_head_dim;
+                int value_dim_gdn = ls.value_dim;
+                int n_k_heads = config.linear_num_key_heads > 0
+                                    ? config.linear_num_key_heads : config.num_heads;
+                int key_dim_gdn = n_k_heads * k_hd;
+                int qkv_dim = key_dim_gdn * 2 + value_dim_gdn;
+                int kv_ratio = std::max(n_v_heads / std::max(n_k_heads, 1), 1);
+
+                // 1. QKV projection: output = [Q(key_dim), K(key_dim), V(value_dim)]
+                compute.matmul_transposed_q(gdn_qkv.data(), xb.data(),
+                                            lw.w_qkv, qkv_dim, dim);
+                float* gdn_q_ptr = gdn_qkv.data();
+                float* gdn_k_ptr = gdn_qkv.data() + key_dim_gdn;
+                float* gdn_v_ptr = gdn_qkv.data() + key_dim_gdn * 2;
+
+                // 2. Gate z projection
+                if (lw.w_attn_gate.valid()) {
+                    compute.matmul_transposed_q(gdn_z.data(), xb.data(),
+                                                lw.w_attn_gate, value_dim_gdn, dim);
+                }
+
+                // 3. Beta projection (per-head write strength)
+                if (lw.w_ssm_beta.valid()) {
+                    compute.matmul_transposed_q(gdn_beta.data(), xb.data(),
+                                                lw.w_ssm_beta, n_v_heads, dim);
+                    for (int h = 0; h < n_v_heads; h++) {
+                        gdn_beta[h] = sigmoid_f(gdn_beta[h]);
+                    }
+                } else {
+                    for (int h = 0; h < n_v_heads; h++) gdn_beta[h] = 1.0f;
+                }
+
+                // 4. Alpha projection (per-head decay gating)
+                bool alpha_valid = lw.w_ssm_alpha.valid();
+                if (alpha_valid) {
+                    compute.matmul_transposed_q(gdn_alpha.data(), xb.data(),
+                                                lw.w_ssm_alpha, n_v_heads, dim);
+                }
+
+                // 5. DT projection (per-head, optional)
+                bool dt_valid = lw.w_ssm_dt.valid();
+                if (dt_valid) {
+                    compute.matmul_transposed_q(gdn_dt.data(), xb.data(),
+                                                lw.w_ssm_dt, n_v_heads, dim);
+                }
+
+                // 6. Causal depthwise conv1d on V
+                if (ls.conv_width > 0 && lw.ssm_conv1d_data) {
+                    for (int d = 0; d < value_dim_gdn; d++) {
+                        float* cs = ls.channel_conv(d);
+                        // Shift history left by 1, insert current v
+                        for (int w = 0; w < ls.conv_width - 1; w++) {
+                            cs[w] = cs[w + 1];
+                        }
+                        cs[ls.conv_width - 1] = gdn_v_ptr[d];
+                        // Compute convolution output
+                        float sum = 0.0f;
+                        const float* cw = lw.ssm_conv1d_data + d * ls.conv_width;
+                        for (int w = 0; w < ls.conv_width; w++) {
+                            sum += cw[w] * cs[w];
+                        }
+                        gdn_conv_out[d] = sum;
+                    }
+                } else {
+                    memcpy(gdn_conv_out.data(), gdn_v_ptr,
+                           value_dim_gdn * sizeof(float));
+                }
+
+                // 7. Per-head delta rule state update and query
+                for (int h = 0; h < n_v_heads; h++) {
+                    float* S = ls.head_state(h);
+                    int k_head = h / kv_ratio;  // GQA-style key head sharing
+                    float* qh = gdn_q_ptr + k_head * k_hd;
+                    float* kh = gdn_k_ptr + k_head * k_hd;
+                    float* vh = gdn_conv_out.data() + h * v_hd;
+
+                    // Compute decay: exp(-exp(a_param) * sigmoid(alpha))
+                    float base_rate = lw.ssm_a ? expf(lw.ssm_a[h]) : 1.0f;
+                    float alpha_gate = alpha_valid ? sigmoid_f(gdn_alpha[h]) : 1.0f;
+                    float log_decay = -base_rate * alpha_gate;
+                    if (dt_valid) {
+                        log_decay *= sigmoid_f(gdn_dt[h]);
+                    }
+                    float decay = expf(log_decay);
+                    float beta_h = gdn_beta[h];
+
+                    // Prediction: e = S^T @ k  (what the state predicts for key)
+                    for (int j = 0; j < v_hd; j++) {
+                        float sum = 0.0f;
+                        for (int i = 0; i < k_hd; i++) {
+                            sum += S[i * v_hd + j] * kh[i];
+                        }
+                        gdn_pred[j] = sum;
+                    }
+
+                    // State update: S = decay * S + beta * outer(k, v - prediction)
+                    for (int i = 0; i < k_hd; i++) {
+                        for (int j = 0; j < v_hd; j++) {
+                            float delta = vh[j] - gdn_pred[j];
+                            S[i * v_hd + j] = decay * S[i * v_hd + j]
+                                              + beta_h * kh[i] * delta;
+                        }
+                    }
+
+                    // Query: y[h] = S^T @ q
+                    float* yh = gdn_y.data() + h * v_hd;
+                    for (int j = 0; j < v_hd; j++) {
+                        float sum = 0.0f;
+                        for (int i = 0; i < k_hd; i++) {
+                            sum += S[i * v_hd + j] * qh[i];
+                        }
+                        yh[j] = sum;
+                    }
+                }
+
+                // 8. Group RMSNorm on output (per head group)
+                if (lw.ssm_norm) {
+                    for (int h = 0; h < n_v_heads; h++) {
+                        float* yh = gdn_y.data() + h * v_hd;
+                        float ss = 0.0f;
+                        for (int j = 0; j < v_hd; j++) ss += yh[j] * yh[j];
+                        ss = 1.0f / sqrtf(ss / v_hd + 1e-5f);
+                        for (int j = 0; j < v_hd; j++) {
+                            yh[j] = yh[j] * ss * lw.ssm_norm[h * v_hd + j];
+                        }
+                    }
+                }
+
+                // 9. Gate: y = y * sigmoid(z)
+                for (int d = 0; d < value_dim_gdn; d++) {
+                    gdn_y[d] *= sigmoid_f(gdn_z[d]);
+                }
+
+                // 10. Output projection
+                compute.matmul_transposed_q(xb.data(), gdn_y.data(),
+                                            lw.w_ssm_out, dim, value_dim_gdn);
+
+                // Residual connection
+                compute.add(x.data(), x.data(), xb.data(), dim);
             }
-            // else: Qwen3.5 GatedDeltaNet linear attention layer without Q/K/V
-            //       weights - skip attention (identity residual) until full
-            //       GatedDeltaNet implementation is added.
+            // else: linear attention layer without required weights — identity residual
 
             // FFN norm
             compute.rmsnorm(xb.data(), x.data(), lw.ffn_norm, dim,
@@ -450,6 +653,31 @@ private:
             }
         }
 
+        // Read rope dimension count (for partial rotary factor)
+        int rope_dim_count = static_cast<int>(
+            gguf.get_i64(arch + ".rope.dimension_count", 0));
+        if (rope_dim_count > 0) {
+            config.rope_dim = rope_dim_count;
+            if (config.head_dim > 0) {
+                config.partial_rotary_factor =
+                    static_cast<float>(rope_dim_count) / config.head_dim;
+            }
+        }
+
+        // Read linear attention parameters (Qwen3.5 GatedDeltaNet)
+        if (config.is_hybrid) {
+            config.linear_key_head_dim = static_cast<int>(
+                gguf.get_i64(arch + ".attention.linear_key_length", 0));
+            config.linear_value_head_dim = static_cast<int>(
+                gguf.get_i64(arch + ".attention.linear_value_length", 0));
+            config.linear_num_key_heads = static_cast<int>(
+                gguf.get_i64(arch + ".attention.linear_head_count_kv", 0));
+            config.linear_num_value_heads = static_cast<int>(
+                gguf.get_i64(arch + ".attention.linear_head_count", 0));
+            config.linear_conv_kernel_dim = static_cast<int>(
+                gguf.get_i64(arch + ".ssm.conv_kernel", 0));
+        }
+
         // Get vocab size from tokenizer if not in model metadata
         if (config.vocab_size == 0) {
             auto it = gguf.metadata.find("tokenizer.ggml.tokens");
@@ -574,6 +802,7 @@ private:
                 weights.layers[l].w_ssm_alpha = load_tensor_raw(prefix + "ssm_alpha.weight", -1, true);
                 weights.layers[l].ssm_a = load_tensor(prefix + "ssm_a", -1, true);
                 weights.layers[l].w_ssm_conv1d = load_tensor_raw(prefix + "ssm_conv1d.weight", -1, true);
+                weights.layers[l].ssm_conv1d_data = load_tensor(prefix + "ssm_conv1d.weight", -1, true);
                 weights.layers[l].w_ssm_dt = load_tensor_raw(prefix + "ssm_dt.weight", -1, true);
                 weights.layers[l].w_ssm_out = load_tensor_raw(prefix + "ssm_out.weight", -1, true);
                 weights.layers[l].ssm_norm = load_tensor(prefix + "ssm_norm.weight", -1, true);
@@ -676,6 +905,40 @@ private:
         for (int i = 0; i < half_rope; i++) {
             rope_freqs[i] = 1.0f / powf(config.rope_theta,
                                         static_cast<float>(2 * i) / rope_dim);
+        }
+
+        // Allocate GatedDeltaNet recurrent states for hybrid models
+        if (config.is_hybrid) {
+            int lin_k_hd = config.linear_key_head_dim > 0
+                               ? config.linear_key_head_dim : config.head_dim;
+            int lin_v_hd = config.linear_value_head_dim > 0
+                               ? config.linear_value_head_dim : config.head_dim;
+            int lin_n_v = config.linear_num_value_heads > 0
+                              ? config.linear_num_value_heads : config.num_kv_heads;
+            int lin_n_k = config.linear_num_key_heads > 0
+                              ? config.linear_num_key_heads : config.num_heads;
+            int lin_cw = config.linear_conv_kernel_dim > 0
+                             ? config.linear_conv_kernel_dim : 4;
+            int lin_total_v = lin_n_v * lin_v_hd;
+            int lin_total_k = lin_n_k * lin_k_hd;
+
+            linear_states.resize(config.num_layers);
+            for (int l = 0; l < config.num_layers; l++) {
+                if (l < static_cast<int>(config.layer_types.size()) &&
+                    config.layer_types[l] == "linear_attention") {
+                    linear_states[l].init(lin_n_v, lin_k_hd, lin_v_hd, lin_cw);
+                }
+            }
+
+            // Scratch buffers for GatedDeltaNet forward pass
+            gdn_qkv.resize(lin_total_k * 2 + lin_total_v);
+            gdn_z.resize(lin_total_v);
+            gdn_beta.resize(lin_n_v);
+            gdn_alpha.resize(lin_n_v);
+            gdn_dt.resize(lin_n_v);
+            gdn_y.resize(lin_total_v);
+            gdn_conv_out.resize(lin_total_v);
+            gdn_pred.resize(lin_v_hd);
         }
     }
 
@@ -957,6 +1220,35 @@ private:
                 float* wgate = load_hf_tensor(gguf_prefix + "attn_gate.weight",
                                                gguf_to_hf, true);
                 if (wgate) weights.layers[l].w_attn_gate = {wgate, GGML_TYPE_F32};
+
+                float* wbeta = load_hf_tensor(gguf_prefix + "ssm_beta.weight",
+                                               gguf_to_hf, true);
+                if (wbeta) weights.layers[l].w_ssm_beta = {wbeta, GGML_TYPE_F32};
+
+                float* walpha = load_hf_tensor(gguf_prefix + "ssm_alpha.weight",
+                                                gguf_to_hf, true);
+                if (walpha) weights.layers[l].w_ssm_alpha = {walpha, GGML_TYPE_F32};
+
+                weights.layers[l].ssm_a = load_hf_tensor(
+                    gguf_prefix + "ssm_a", gguf_to_hf, true);
+
+                float* wconv = load_hf_tensor(gguf_prefix + "ssm_conv1d.weight",
+                                               gguf_to_hf, true);
+                if (wconv) {
+                    weights.layers[l].w_ssm_conv1d = {wconv, GGML_TYPE_F32};
+                    weights.layers[l].ssm_conv1d_data = wconv;
+                }
+
+                float* wdt = load_hf_tensor(gguf_prefix + "ssm_dt.weight",
+                                              gguf_to_hf, true);
+                if (wdt) weights.layers[l].w_ssm_dt = {wdt, GGML_TYPE_F32};
+
+                float* wout = load_hf_tensor(gguf_prefix + "ssm_out.weight",
+                                              gguf_to_hf, true);
+                if (wout) weights.layers[l].w_ssm_out = {wout, GGML_TYPE_F32};
+
+                weights.layers[l].ssm_norm = load_hf_tensor(
+                    gguf_prefix + "ssm_norm.weight", gguf_to_hf, true);
             }
 
             // Biases (optional)
