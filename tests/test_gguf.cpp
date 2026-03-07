@@ -2224,6 +2224,277 @@ void test_partial_rotary_factor() {
     PASS();
 }
 
+void test_linear_attention_state() {
+    TEST(linear_attention_state);
+
+    // Test LinearAttentionState init and clear
+    LinearAttentionState state;
+    state.init(/*nv=*/2, /*kd=*/3, /*vd=*/4, /*cw=*/2);
+    ASSERT_EQ(state.num_v_heads, 2);
+    ASSERT_EQ(state.key_head_dim, 3);
+    ASSERT_EQ(state.value_head_dim, 4);
+    ASSERT_EQ(state.conv_width, 2);
+    ASSERT_EQ(state.value_dim, 8);  // 2 * 4
+
+    // recurrent: 2 heads * 3 * 4 = 24 elements
+    ASSERT_EQ(static_cast<int>(state.recurrent.size()), 24);
+    // conv_state: 8 channels * 2 width = 16
+    ASSERT_EQ(static_cast<int>(state.conv_state.size()), 16);
+
+    // Write some values and verify head_state/channel_conv pointers
+    float* s0 = state.head_state(0);
+    float* s1 = state.head_state(1);
+    ASSERT_TRUE(s0 == state.recurrent.data());
+    ASSERT_TRUE(s1 == state.recurrent.data() + 12);  // 3 * 4
+
+    float* c0 = state.channel_conv(0);
+    float* c3 = state.channel_conv(3);
+    ASSERT_TRUE(c0 == state.conv_state.data());
+    ASSERT_TRUE(c3 == state.conv_state.data() + 6);  // 3 * 2
+
+    // Write and clear
+    s0[0] = 42.0f;
+    c0[0] = 7.0f;
+    state.clear();
+    ASSERT_NEAR(s0[0], 0.0f, 1e-6);
+    ASSERT_NEAR(c0[0], 0.0f, 1e-6);
+
+    PASS();
+}
+
+void test_gated_delta_net_step() {
+    TEST(gated_delta_net_step);
+
+    // Test a single GatedDeltaNet step with known weights on a tiny model:
+    // hidden_size = 4, num_v_heads = 1, key_head_dim = 2, value_head_dim = 2
+    // conv_width = 2
+    int dim = 4;
+    int n_v = 1, k_hd = 2, v_hd = 2, cw = 2;
+    int key_dim = 1 * k_hd;  // n_k_heads = 1
+    int val_dim = n_v * v_hd;
+    int qkv_dim = key_dim * 2 + val_dim;  // 2 + 2 + 2 = 6
+
+    // Create known F32 weights
+    // w_qkv: [qkv_dim=6, hidden=4] — identity-like mapping
+    float w_qkv[6 * 4] = {
+        // row 0 (q[0]): extract x[0]
+        1, 0, 0, 0,
+        // row 1 (q[1]): extract x[1]
+        0, 1, 0, 0,
+        // row 2 (k[0]): extract x[2]
+        0, 0, 1, 0,
+        // row 3 (k[1]): extract x[3]
+        0, 0, 0, 1,
+        // row 4 (v[0]): extract x[0]+x[2]
+        1, 0, 1, 0,
+        // row 5 (v[1]): extract x[1]+x[3]
+        0, 1, 0, 1,
+    };
+
+    // w_attn_gate: [val_dim=2, hidden=4] — each row sums to 0.5 of input
+    float w_gate[2 * 4] = {
+        0.125f, 0.125f, 0.125f, 0.125f,
+        0.125f, 0.125f, 0.125f, 0.125f,
+    };
+
+    // w_ssm_beta: [n_v=1, hidden=4] — positive to get beta near 1
+    float w_beta[1 * 4] = { 0.5f, 0.5f, 0.5f, 0.5f };
+
+    // ssm_a: [n_v=1] — small decay
+    float ssm_a[1] = { -1.0f };  // exp(-1) ≈ 0.37 base rate
+
+    // conv1d: [val_dim=2, conv_width=2] — simple averaging
+    float conv1d_w[2 * 2] = { 0.5f, 0.5f, 0.5f, 0.5f };
+
+    // w_ssm_out: [hidden=4, val_dim=2] — project back
+    float w_out[4 * 2] = {
+        1, 0,
+        0, 1,
+        1, 0,
+        0, 1,
+    };
+
+    // ssm_norm: [val_dim=2] — unit scale
+    float norm_w[2] = { 1.0f, 1.0f };
+
+    // Set up state
+    LinearAttentionState ls;
+    ls.init(n_v, k_hd, v_hd, cw);
+
+    // Input vector
+    float xb[4] = { 1.0f, 2.0f, 0.5f, 0.3f };
+
+    // Scratch buffers
+    std::vector<float> gdn_qkv_buf(qkv_dim);
+    std::vector<float> gdn_z_buf(val_dim);
+    std::vector<float> gdn_beta_buf(n_v);
+    std::vector<float> gdn_conv_out_buf(val_dim);
+    std::vector<float> gdn_pred_buf(v_hd);
+    std::vector<float> gdn_y_buf(val_dim);
+
+    Compute compute(Backend::CPU);
+
+    // 1. QKV projection
+    QuantWeight qw = { w_qkv, GGML_TYPE_F32 };
+    compute.matmul_transposed_q(gdn_qkv_buf.data(), xb, qw, qkv_dim, dim);
+
+    float* qptr = gdn_qkv_buf.data();           // q = [1, 2]
+    float* kptr = gdn_qkv_buf.data() + key_dim; // k = [0.5, 0.3]
+    float* vptr = gdn_qkv_buf.data() + key_dim * 2; // v = [1.5, 2.3]
+
+    ASSERT_NEAR(qptr[0], 1.0f, 1e-5);
+    ASSERT_NEAR(qptr[1], 2.0f, 1e-5);
+    ASSERT_NEAR(kptr[0], 0.5f, 1e-5);
+    ASSERT_NEAR(kptr[1], 0.3f, 1e-5);
+    ASSERT_NEAR(vptr[0], 1.5f, 1e-5);
+    ASSERT_NEAR(vptr[1], 2.3f, 1e-5);
+
+    // 2. Gate z
+    QuantWeight gw = { w_gate, GGML_TYPE_F32 };
+    compute.matmul_transposed_q(gdn_z_buf.data(), xb, gw, val_dim, dim);
+
+    // 3. Beta
+    QuantWeight bw = { w_beta, GGML_TYPE_F32 };
+    compute.matmul_transposed_q(gdn_beta_buf.data(), xb, bw, n_v, dim);
+    for (int h = 0; h < n_v; h++) gdn_beta_buf[h] = sigmoid_f(gdn_beta_buf[h]);
+    ASSERT_TRUE(gdn_beta_buf[0] > 0.5f && gdn_beta_buf[0] < 1.0f);
+
+    // 4. Conv1d step: shift and convolve
+    for (int d = 0; d < val_dim; d++) {
+        float* cs = ls.channel_conv(d);
+        for (int w = 0; w < cw - 1; w++) cs[w] = cs[w + 1];
+        cs[cw - 1] = vptr[d];
+        float sum = 0.0f;
+        for (int w = 0; w < cw; w++) sum += conv1d_w[d * cw + w] * cs[w];
+        gdn_conv_out_buf[d] = sum;
+    }
+
+    // First step: conv_state was zeros, so output = 0.5 * 0 + 0.5 * v
+    ASSERT_NEAR(gdn_conv_out_buf[0], 0.5f * vptr[0], 1e-5);
+    ASSERT_NEAR(gdn_conv_out_buf[1], 0.5f * vptr[1], 1e-5);
+
+    // 5. Delta rule state update (single head)
+    // ssm_a[0] = -1 → base_rate = exp(-1) ≈ 0.368 → decay = exp(-0.368) ≈ 0.692
+    float decay = expf(-expf(ssm_a[0]));
+    float beta = gdn_beta_buf[0];
+    float* S = ls.head_state(0);
+
+    // Prediction: S^T @ k (S is initially zero, so prediction = 0)
+    for (int j = 0; j < v_hd; j++) {
+        float sum = 0.0f;
+        for (int i = 0; i < k_hd; i++) sum += S[i * v_hd + j] * kptr[i];
+        gdn_pred_buf[j] = sum;
+    }
+    ASSERT_NEAR(gdn_pred_buf[0], 0.0f, 1e-5);
+
+    // State update: S = decay * S + beta * outer(k, v_conv - pred)
+    for (int i = 0; i < k_hd; i++) {
+        for (int j = 0; j < v_hd; j++) {
+            float delta = gdn_conv_out_buf[j] - gdn_pred_buf[j];
+            S[i * v_hd + j] = decay * S[i * v_hd + j] + beta * kptr[i] * delta;
+        }
+    }
+
+    // After first step, S = beta * outer(k, v_conv) since S was zero
+    ASSERT_NEAR(S[0], beta * kptr[0] * gdn_conv_out_buf[0], 1e-5);
+
+    // Query: y = S^T @ q
+    for (int j = 0; j < v_hd; j++) {
+        float sum = 0.0f;
+        for (int i = 0; i < k_hd; i++) sum += S[i * v_hd + j] * qptr[i];
+        gdn_y_buf[j] = sum;
+    }
+
+    // y should be non-zero since S is non-zero and q is non-zero
+    ASSERT_TRUE(fabs(gdn_y_buf[0]) > 1e-6 || fabs(gdn_y_buf[1]) > 1e-6);
+
+    // 6. Normalize (group RMS norm)
+    float ss = 0.0f;
+    for (int j = 0; j < v_hd; j++) ss += gdn_y_buf[j] * gdn_y_buf[j];
+    ss = 1.0f / sqrtf(ss / v_hd + 1e-5f);
+    for (int j = 0; j < v_hd; j++) gdn_y_buf[j] *= ss * norm_w[j];
+
+    // 7. Gate: y = y * sigmoid(z)
+    for (int d = 0; d < val_dim; d++) {
+        gdn_y_buf[d] *= sigmoid_f(gdn_z_buf[d]);
+    }
+
+    // 8. Output projection
+    float output[4];
+    QuantWeight ow = { w_out, GGML_TYPE_F32 };
+    compute.matmul_transposed_q(output, gdn_y_buf.data(), ow, dim, val_dim);
+
+    // Verify output is non-zero (the computation chain produced results)
+    float out_norm = 0.0f;
+    for (int i = 0; i < dim; i++) out_norm += output[i] * output[i];
+    ASSERT_TRUE(out_norm > 1e-10);
+
+    // Run a second step to verify state accumulation
+    float xb_step2[4] = { 0.5f, 1.0f, 0.8f, 0.2f };
+    compute.matmul_transposed_q(gdn_qkv_buf.data(), xb_step2, qw, qkv_dim, dim);
+    qptr = gdn_qkv_buf.data();
+    kptr = gdn_qkv_buf.data() + key_dim;
+    vptr = gdn_qkv_buf.data() + key_dim * 2;
+
+    // Conv step 2
+    for (int d = 0; d < val_dim; d++) {
+        float* cs = ls.channel_conv(d);
+        for (int w = 0; w < cw - 1; w++) cs[w] = cs[w + 1];
+        cs[cw - 1] = vptr[d];
+        float sum = 0.0f;
+        for (int w = 0; w < cw; w++) sum += conv1d_w[d * cw + w] * cs[w];
+        gdn_conv_out_buf[d] = sum;
+    }
+
+    // State should now include previous state (decayed) + new update
+    float S_00_prev = S[0];
+    for (int j = 0; j < v_hd; j++) {
+        float sum = 0.0f;
+        for (int i = 0; i < k_hd; i++) sum += S[i * v_hd + j] * kptr[i];
+        gdn_pred_buf[j] = sum;
+    }
+    for (int i = 0; i < k_hd; i++) {
+        for (int j = 0; j < v_hd; j++) {
+            float delta = gdn_conv_out_buf[j] - gdn_pred_buf[j];
+            S[i * v_hd + j] = decay * S[i * v_hd + j] + beta * kptr[i] * delta;
+        }
+    }
+
+    // After second step, S[0] should be different from first step
+    ASSERT_TRUE(fabs(S[0] - S_00_prev) > 1e-6);
+
+    // Verify clear resets state
+    ls.clear();
+    ASSERT_NEAR(ls.head_state(0)[0], 0.0f, 1e-6);
+    ASSERT_NEAR(ls.channel_conv(0)[0], 0.0f, 1e-6);
+
+    PASS();
+}
+
+void test_clear_state() {
+    TEST(clear_state);
+
+    // Verify Model::clear_state() clears both KV cache and linear states
+    // We test this at the struct level since we can't load a full model
+    KVCache kv;
+    kv.init(2, 4, 3);
+    kv.key(0, 0)[0] = 1.0f;
+    kv.value(1, 2)[1] = 2.0f;
+    kv.clear();
+    ASSERT_NEAR(kv.key(0, 0)[0], 0.0f, 1e-6);
+    ASSERT_NEAR(kv.value(1, 2)[1], 0.0f, 1e-6);
+
+    LinearAttentionState ls;
+    ls.init(2, 3, 4, 2);
+    ls.head_state(0)[0] = 5.0f;
+    ls.channel_conv(1)[0] = 3.0f;
+    ls.clear();
+    ASSERT_NEAR(ls.head_state(0)[0], 0.0f, 1e-6);
+    ASSERT_NEAR(ls.channel_conv(1)[0], 0.0f, 1e-6);
+
+    PASS();
+}
+
 // ---- Run all tests ----
 
 int main() {
@@ -2317,6 +2588,11 @@ int main() {
     test_moe_weight_name_mapping();
     test_partial_rotary_factor();
     test_expanded_architecture_mappings();
+
+    fprintf(stderr, "\nGatedDeltaNet linear attention tests:\n");
+    test_linear_attention_state();
+    test_gated_delta_net_step();
+    test_clear_state();
 
     fprintf(stderr, "\n=== Results: %d passed, %d failed ===\n",
             tests_passed, tests_failed);

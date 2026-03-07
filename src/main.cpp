@@ -394,8 +394,8 @@ static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
         if (len == 0) continue;
         if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) break;
 
-        // Reset KV cache for new conversation
-        model.kv_cache.clear();
+        // Reset state for new conversation
+        model.clear_state();
 
         generate(model, sampler, line, max_tokens, system_prompt,
                  use_chat_template, no_thinking);
