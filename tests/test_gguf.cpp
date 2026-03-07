@@ -2291,7 +2291,7 @@ void test_gated_delta_net_step() {
         0, 1, 0, 1,
     };
 
-    // w_attn_gate: [val_dim=2, hidden=4] — all 0.5 (sigmoid(0.5) ≈ 0.62)
+    // w_attn_gate: [val_dim=2, hidden=4] — each row sums to 0.5 of input
     float w_gate[2 * 4] = {
         0.125f, 0.125f, 0.125f, 0.125f,
         0.125f, 0.125f, 0.125f, 0.125f,
@@ -2374,7 +2374,8 @@ void test_gated_delta_net_step() {
     ASSERT_NEAR(gdn_conv_out_buf[1], 0.5f * vptr[1], 1e-5);
 
     // 5. Delta rule state update (single head)
-    float decay = expf(-expf(ssm_a[0]));  // exp(-exp(-1)) ≈ exp(-0.368) ≈ 0.692
+    // ssm_a[0] = -1 → base_rate = exp(-1) ≈ 0.368 → decay = exp(-0.368) ≈ 0.692
+    float decay = expf(-expf(ssm_a[0]));
     float beta = gdn_beta_buf[0];
     float* S = ls.head_state(0);
 
@@ -2429,8 +2430,8 @@ void test_gated_delta_net_step() {
     ASSERT_TRUE(out_norm > 1e-10);
 
     // Run a second step to verify state accumulation
-    float xb2_in[4] = { 0.5f, 1.0f, 0.8f, 0.2f };
-    compute.matmul_transposed_q(gdn_qkv_buf.data(), xb2_in, qw, qkv_dim, dim);
+    float xb_step2[4] = { 0.5f, 1.0f, 0.8f, 0.2f };
+    compute.matmul_transposed_q(gdn_qkv_buf.data(), xb_step2, qw, qkv_dim, dim);
     qptr = gdn_qkv_buf.data();
     kptr = gdn_qkv_buf.data() + key_dim;
     vptr = gdn_qkv_buf.data() + key_dim * 2;

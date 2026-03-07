@@ -378,7 +378,6 @@ public:
                                     ? config.linear_num_key_heads : config.num_heads;
                 int key_dim_gdn = n_k_heads * k_hd;
                 int qkv_dim = key_dim_gdn * 2 + value_dim_gdn;
-                int kv_ratio = std::max(n_v_heads / std::max(n_k_heads, 1), 1);
 
                 // 1. QKV projection: output = [Q(key_dim), K(key_dim), V(value_dim)]
                 compute.matmul_transposed_q(gdn_qkv.data(), xb.data(),
@@ -443,7 +442,7 @@ public:
                 // 7. Per-head delta rule state update and query
                 for (int h = 0; h < n_v_heads; h++) {
                     float* S = ls.head_state(h);
-                    int k_head = h / kv_ratio;  // GQA-style key head sharing
+                    int k_head = h % n_k_heads;  // GQA-style key head sharing
                     float* qh = gdn_q_ptr + k_head * k_hd;
                     float* kh = gdn_k_ptr + k_head * k_hd;
                     float* vh = gdn_conv_out.data() + h * v_hd;
