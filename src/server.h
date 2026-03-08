@@ -1,7 +1,7 @@
 #ifndef LLM_SERVER_H
 #define LLM_SERVER_H
 
-// Minimal OpenAI-compatible HTTP server for llm.cpp.
+// Minimal OpenAI-compatible HTTP server for swllm.cpp.
 // Implements:
 //   GET  /           - HTML web chat interface
 //   GET  /v1/models  - model list
@@ -481,7 +481,7 @@ static std::string get_web_ui_html(int port) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title id="page-title">llm.cpp Chat</title>
+<title id="page-title">swllm.cpp Chat</title>
 <style>
 :root{--bg:#0d1117;--surface:#161b22;--card:#21262d;--accent:#58a6ff;--danger:#f85149;--ok:#3fb950;--text:#e6edf3;--dim:#8b949e;--border:#30363d;--user:#1f3a5f;--radius:10px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -553,7 +553,7 @@ pre code{background:transparent;padding:0}
 </head>
 <body>
 <div class="sidebar">
-  <div class="logo"><h1>llm.cpp</h1><p data-i18n="subtitle">Lightweight LLM inference</p></div>
+  <div class="logo"><h1>swllm.cpp</h1><p data-i18n="subtitle">Lightweight LLM inference</p></div>
   <div class="settings">
     <div>
       <h3 data-i18n="language">Language</h3>
@@ -615,7 +615,7 @@ pre code{background:transparent;padding:0}
   <div class="messages" id="msgs">
     <div class="msg assistant">
       <div class="avatar">&#129302;</div>
-      <div class="bubble" id="greeting-bubble">Hello! I&#39;m powered by <strong>llm.cpp</strong>. How can I help you today?</div>
+      <div class="bubble" id="greeting-bubble">Hello! I&#39;m powered by <strong>swllm.cpp</strong>. How can I help you today?</div>
     </div>
   </div>
   <div class="input-area">
@@ -638,13 +638,13 @@ pre code{background:transparent;padding:0}
 // ---- i18n translations ----
 var LANG={
 en:{
-  title:'llm.cpp Chat',subtitle:'Lightweight LLM inference',language:'Language',
+  title:'swllm.cpp Chat',subtitle:'Lightweight LLM inference',language:'Language',
   sys_prompt_h:'System Prompt',temperature:'Temperature',max_tokens:'Max Tokens',
   top_p:'Top-P',api_key_label:'API Key (Bearer token)',api_key_ph:'Leave blank if not set',
   server_url:'Server URL',clear_chat:'\uD83D\uDDD1 Clear Chat',
   agent_tools_h:'Agent / Tools',enable_tool:'Enable tool calling',
   tool_demo:'Built-in tools: calculator, get_datetime, execute_command, code_interpreter, text_editor, web_search',
-  greeting:'Hello! I\'m powered by <strong>llm.cpp</strong>. How can I help you today?',
+  greeting:'Hello! I\'m powered by <strong>swllm.cpp</strong>. How can I help you today?',
   msg_ph:'Message\u2026 (Enter to send, Shift+Enter for newline)',
   chat_cleared:'Chat cleared.',attach_img:'Attach image',attach_file:'Attach file',
   tool_calls_h:'\uD83D\uDD27 Tool Calls \u2014 confirm before execution',
@@ -661,7 +661,7 @@ en:{
   executing:'Executing...'
 },
 zh:{
-  title:'llm.cpp \u804A\u5929',subtitle:'\u8F7B\u91CF\u7EA7 LLM \u63A8\u7406\u5F15\u64CE',
+  title:'swllm.cpp \u804A\u5929',subtitle:'\u8F7B\u91CF\u7EA7 LLM \u63A8\u7406\u5F15\u64CE',
   language:'\u8BED\u8A00',
   sys_prompt_h:'\u7CFB\u7EDF\u63D0\u793A\u8BCD',temperature:'\u6E29\u5EA6',
   max_tokens:'\u6700\u5927\u4EE4\u724C\u6570',top_p:'Top-P',
@@ -671,7 +671,7 @@ zh:{
   clear_chat:'\uD83D\uDDD1 \u6E05\u9664\u5BF9\u8BDD',
   agent_tools_h:'\u4EE3\u7406 / \u5DE5\u5177',enable_tool:'\u542F\u7528\u5DE5\u5177\u8C03\u7528',
   tool_demo:'\u5185\u7F6E\u5DE5\u5177\uFF1A\u8BA1\u7B97\u5668\u3001\u83B7\u53D6\u65E5\u671F\u65F6\u95F4\u3001\u6267\u884C\u547D\u4EE4\u3001\u4EE3\u7801\u89E3\u91CA\u5668\u3001\u6587\u672C\u7F16\u8F91\u5668\u3001\u7F51\u7EDC\u641C\u7D22',
-  greeting:'\u4F60\u597D\uFF01\u6211\u7531 <strong>llm.cpp</strong> \u9A71\u52A8\uFF0C\u6709\u4EC0\u4E48\u53EF\u4EE5\u5E2E\u52A9\u4F60\u7684\uFF1F',
+  greeting:'\u4F60\u597D\uFF01\u6211\u7531 <strong>swllm.cpp</strong> \u9A71\u52A8\uFF0C\u6709\u4EC0\u4E48\u53EF\u4EE5\u5E2E\u52A9\u4F60\u7684\uFF1F',
   msg_ph:'\u8F93\u5165\u6D88\u606F\u2026\uFF08Enter \u53D1\u9001\uFF0CShift+Enter \u6362\u884C\uFF09',
   chat_cleared:'\u5BF9\u8BDD\u5DF2\u6E05\u9664\u3002',
   attach_img:'\u9644\u52A0\u56FE\u7247',attach_file:'\u9644\u52A0\u6587\u4EF6',
@@ -689,7 +689,7 @@ zh:{
   executing:'\u6267\u884C\u4E2D...'
 },
 ja:{
-  title:'llm.cpp \u30C1\u30E3\u30C3\u30C8',
+  title:'swllm.cpp \u30C1\u30E3\u30C3\u30C8',
   subtitle:'\u8EFD\u91CF LLM \u63A8\u8AD6\u30A8\u30F3\u30B8\u30F3',
   language:'\u8A00\u8A9E',
   sys_prompt_h:'\u30B7\u30B9\u30C6\u30E0\u30D7\u30ED\u30F3\u30D7\u30C8',
@@ -702,7 +702,7 @@ ja:{
   agent_tools_h:'\u30A8\u30FC\u30B8\u30A7\u30F3\u30C8 / \u30C4\u30FC\u30EB',
   enable_tool:'\u30C4\u30FC\u30EB\u547C\u3073\u51FA\u3057\u3092\u6709\u52B9\u5316',
   tool_demo:'\u5185\u8535\u30C4\u30FC\u30EB\uFF1A\u8A08\u7B97\u6A5F\u3001\u65E5\u6642\u53D6\u5F97\u3001\u30B3\u30DE\u30F3\u30C9\u5B9F\u884C\u3001\u30B3\u30FC\u30C9\u30A4\u30F3\u30BF\u30FC\u30D7\u30EA\u30BF\u30FC\u3001\u30C6\u30AD\u30B9\u30C8\u30A8\u30C7\u30A3\u30BF\u30FC\u3001\u30A6\u30A7\u30D6\u691C\u7D22',
-  greeting:'\u3053\u3093\u306B\u3061\u306F\uFF01<strong>llm.cpp</strong> \u3067\u52D5\u3044\u3066\u3044\u307E\u3059\u3002\u4F55\u304B\u304A\u624B\u4F1D\u3044\u3067\u304D\u307E\u3059\u304B\uFF1F',
+  greeting:'\u3053\u3093\u306B\u3061\u306F\uFF01<strong>swllm.cpp</strong> \u3067\u52D5\u3044\u3066\u3044\u307E\u3059\u3002\u4F55\u304B\u304A\u624B\u4F1D\u3044\u3067\u304D\u307E\u3059\u304B\uFF1F',
   msg_ph:'\u30E1\u30C3\u30BB\u30FC\u30B8\u2026\uFF08Enter\u3067\u9001\u4FE1\u3001Shift+Enter\u3067\u6539\u884C\uFF09',
   chat_cleared:'\u30C1\u30E3\u30C3\u30C8\u3092\u30AF\u30EA\u30A2\u3057\u307E\u3057\u305F\u3002',
   attach_img:'\u753B\u50CF\u3092\u6DFB\u4ED8',attach_file:'\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8',
@@ -955,7 +955,7 @@ async function send(){
   if(sys)apiMsgs.push({role:'system',content:sys});
   apiMsgs=apiMsgs.concat(history);
 
-  var payload={model:'llm.cpp',messages:apiMsgs,
+  var payload={model:'swllm.cpp',messages:apiMsgs,
     max_tokens:parseInt(document.getElementById('maxt').value)||512,
     temperature:parseFloat(document.getElementById('temp').value)||0.8,
     top_p:parseFloat(document.getElementById('topp').value)||0.9,
@@ -1043,7 +1043,7 @@ applyLang();
 //
 // Discovers the Internet Gateway Device (router) on the local network via
 // SSDP multicast, parses the description XML, and adds a TCP port mapping so
-// that the llm.cpp server is reachable from the internet.
+// that the swllm.cpp server is reachable from the internet.
 
 // --- XML helpers ---
 
@@ -1406,7 +1406,7 @@ static bool upnp_map_port(int port) {
         "<NewInternalPort>" + ps + "</NewInternalPort>"
         "<NewInternalClient>" + local_ip + "</NewInternalClient>"
         "<NewEnabled>1</NewEnabled>"
-        "<NewPortMappingDescription>llm.cpp</NewPortMappingDescription>"
+        "<NewPortMappingDescription>swllm.cpp</NewPortMappingDescription>"
         // Lease duration 0 = indefinite (router keeps mapping until reboot or explicit deletion)
         "<NewLeaseDuration>0</NewLeaseDuration>";
     std::string resp_body;
@@ -1599,7 +1599,7 @@ struct ServerConfig {
     int port = 8080;
     std::string system_prompt = "You are a helpful assistant.";
     std::string api_key;        // if non-empty, require "Authorization: Bearer <api_key>"
-    std::string model_name = "llm.cpp";  // ID returned by /v1/models
+    std::string model_name = "swllm.cpp";  // ID returned by /v1/models
     bool upnp = false;          // attempt UPnP IGD port mapping on startup
 };
 
@@ -1815,7 +1815,7 @@ static void handle_client(socket_t client_fd, Model& model, Sampler& sampler,
         std::string resp =
             "{\"object\":\"list\",\"data\":[{\"id\":\"" + id + "\""
             ",\"object\":\"model\",\"created\":" + std::to_string(ts) +
-            ",\"owned_by\":\"llm.cpp\"}]}";
+            ",\"owned_by\":\"swllm.cpp\"}]}";
         http_send(client_fd, "200 OK", "application/json", resp);
         CLOSE_SOCKET(client_fd);
         return;

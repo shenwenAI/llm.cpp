@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(llm_cpp LANGUAGES CXX)
+project(swllm_cpp LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,40 +53,40 @@ if(LLM_CUDA)
 endif()
 
 # Main executable
-add_executable(llm ${LLM_SOURCES})
-target_include_directories(llm PRIVATE src)
+add_executable(swllm ${LLM_SOURCES})
+target_include_directories(swllm PRIVATE src)
 
 if(LLM_OPENMP AND OpenMP_CXX_FOUND)
-    target_link_libraries(llm PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(llm PRIVATE LLM_USE_OPENMP)
+    target_link_libraries(swllm PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(swllm PRIVATE LLM_USE_OPENMP)
 endif()
 
 if(LLM_CUDA)
-    target_compile_definitions(llm PRIVATE LLM_USE_CUDA)
-    target_link_libraries(llm PRIVATE CUDA::cudart CUDA::cublas)
+    target_compile_definitions(swllm PRIVATE LLM_USE_CUDA)
+    target_link_libraries(swllm PRIVATE CUDA::cudart CUDA::cublas)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         # Auto-detect local GPU when CMake supports it; otherwise pick
         # architectures that the installed CUDA toolkit actually supports.
         if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
-            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "native")
+            set_target_properties(swllm PROPERTIES CUDA_ARCHITECTURES "native")
         elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "13.0")
-            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "75;80;86;89;90")
+            set_target_properties(swllm PROPERTIES CUDA_ARCHITECTURES "75;80;86;89;90")
         elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.0")
-            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "70;75;80;86;89;90")
+            set_target_properties(swllm PROPERTIES CUDA_ARCHITECTURES "70;75;80;86;89;90")
         else()
-            set_target_properties(llm PROPERTIES CUDA_ARCHITECTURES "70;75;80")
+            set_target_properties(swllm PROPERTIES CUDA_ARCHITECTURES "70;75;80")
         endif()
     endif()
 endif()
 
 # Math library on Linux
 if(UNIX AND NOT APPLE)
-    target_link_libraries(llm PRIVATE m)
+    target_link_libraries(swllm PRIVATE m)
 endif()
 
 # Winsock library on Windows (for HTTP server)
 if(WIN32)
-    target_link_libraries(llm PRIVATE ws2_32)
+    target_link_libraries(swllm PRIVATE ws2_32)
 endif()
 
 # Tests
