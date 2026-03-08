@@ -1,4 +1,4 @@
-// llm.cpp - A lightweight C++ LLM inference engine
+// swllm.cpp - A lightweight C++ LLM inference engine
 // Supports loading GGUF models and running text generation on CPU or GPU.
 // Quantization support: F32, F16, BF16, Q4_0, Q8_0, Q4_K, Q6_K (fused), Q2_K-Q5_K (fallback), FP8
 
@@ -106,7 +106,7 @@ struct RunConfig {
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
-        "llm.cpp - Lightweight LLM inference engine\n"
+        "swllm.cpp - Lightweight LLM inference engine\n"
         "\n"
         "Usage: %s -m <model> [options] [-p \"prompt\"]\n"
         "\n"
@@ -133,7 +133,7 @@ static void print_usage(const char* prog) {
         "  --server                 Run as OpenAI-compatible HTTP API server\n"
         "  --port <N>               HTTP server port (default: 8080)\n"
         "  --api-key <key>          Require Bearer token for server requests\n"
-        "  --model-name <name>      Model name reported by /v1/models (default: llm.cpp)\n"
+        "  --model-name <name>      Model name reported by /v1/models (default: swllm.cpp)\n"
         "  --upnp                   Auto-map port via UPnP IGD (for external access)\n"
         "\n"
         "Other:\n"
@@ -550,7 +550,7 @@ int main(int argc, char** argv) {
         srv.port          = cfg.server_port;
         srv.system_prompt = cfg.system_prompt;
         srv.api_key       = cfg.api_key;
-        srv.model_name    = cfg.model_name.empty() ? "llm.cpp" : cfg.model_name;
+        srv.model_name    = cfg.model_name.empty() ? "swllm.cpp" : cfg.model_name;
         srv.upnp          = cfg.upnp;
         run_server(model, sampler, srv);
         return 0;
