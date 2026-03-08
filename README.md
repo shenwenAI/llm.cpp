@@ -1,4 +1,4 @@
-# llm.cpp
+# swllm.cpp
 
 A lightweight C++ LLM inference engine, similar to [llama.cpp](https://github.com/ggerganov/llama.cpp). Loads GGUF model files **or HuggingFace SafeTensors directly** and runs text generation on **CPU** (with OpenMP) or **GPU** (with CUDA).
 You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
@@ -79,31 +79,31 @@ cmake --build .
 
 ```bash
 # Basic generation (GGUF format)
-./llm -m /path/to/model.gguf -p "Once upon a time"
+./swllm -m /path/to/model.gguf -p "Once upon a time"
 
 # Load HuggingFace model directly (SafeTensors format, no conversion needed)
-./llm -m /path/to/Qwen3.5-0.8B/ -p "Hello, world"
+./swllm -m /path/to/Qwen3.5-0.8B/ -p "Hello, world"
 
 # With GPU acceleration
-./llm -m model.gguf --gpu -p "Explain quantum computing"
+./swllm -m model.gguf --gpu -p "Explain quantum computing"
 
 # Adjust generation parameters
-./llm -m model.gguf -n 512 -t 0.7 --top-k 50 --top-p 0.95 -p "Hello"
+./swllm -m model.gguf -n 512 -t 0.7 --top-k 50 --top-p 0.95 -p "Hello"
 
 # Interactive chat mode
-./llm -m model.gguf -i
+./swllm -m model.gguf -i
 
 # Custom system prompt
-./llm -m model.gguf -s "You are a pirate." -p "Tell me about ships"
+./swllm -m model.gguf -s "You are a pirate." -p "Tell me about ships"
 
 # Show model info
-./llm -m model.gguf --info
+./swllm -m model.gguf --info
 
 # Set CPU threads
-./llm -m model.gguf --threads 8 -p "Hello world"
+./swllm -m model.gguf --threads 8 -p "Hello world"
 
 # Run as OpenAI-compatible HTTP server (connect OpenWebUI to http://localhost:8080/v1)
-./llm -m model.gguf --server --port 8080
+./swllm -m model.gguf --server --port 8080
 ```
 
 ### Command-line Options
@@ -152,7 +152,7 @@ The system prompt (default: "You are a helpful assistant.") can be customized wi
 Start the server with `--server` (optionally `--port <N>`):
 
 ```bash
-./llm -m model.gguf --server --port 8080
+./swllm -m model.gguf --server --port 8080
 ```
 
 The following endpoints are available:
@@ -172,7 +172,7 @@ Example `curl` request:
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llm.cpp",
+    "model": "swllm.cpp",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 256
   }'
@@ -219,7 +219,7 @@ pip install huggingface_hub
 huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 
 # Run inference directly from the HuggingFace directory
-./llm -m ./Qwen3-0.6B/ -p "Hello, world"
+./swllm -m ./Qwen3-0.6B/ -p "Hello, world"
 ```
 
 Supported HuggingFace formats:

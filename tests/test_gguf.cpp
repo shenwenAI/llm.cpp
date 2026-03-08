@@ -1,4 +1,4 @@
-// Basic tests for llm.cpp components
+// Basic tests for swllm.cpp components
 
 #include <cassert>
 #include <cmath>
@@ -2499,7 +2499,7 @@ void test_clear_state() {
 
 int main() {
     print_system_config();
-    fprintf(stderr, "Running llm.cpp tests...\n\n");
+    fprintf(stderr, "Running swllm.cpp tests...\n\n");
 
     fprintf(stderr, "GGUF format tests:\n");
     test_ggml_type_sizes();
