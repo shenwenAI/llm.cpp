@@ -424,7 +424,8 @@ static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
         // Reset state for re-prefill of entire conversation
         model.clear_state();
 
-        // Build full multi-turn prompt when chat template is available
+        // Build full multi-turn prompt when chat template is available.
+        // Falls back to single-turn mode if the model lacks ChatML tokens.
         if (use_chat_template && has_chatml_support(model)) {
             std::string prompt = "<|im_start|>system\n" + system_prompt + "<|im_end|>\n";
             for (const auto& msg : history) {
@@ -437,12 +438,12 @@ static void interactive_mode(Model& model, Sampler& sampler, int max_tokens,
                      false, no_thinking, &output, true);
 
             // Store assistant reply in history for next turn
-            // Strip trailing whitespace from captured output
             while (!output.empty() && (output.back() == '\n' || output.back() == '\r'
                                        || output.back() == ' '))
                 output.pop_back();
             history.emplace_back("assistant", output);
         } else {
+            // Single-turn: no history tracking (model has no ChatML support)
             generate(model, sampler, line, max_tokens, system_prompt,
                      use_chat_template, no_thinking);
         }
