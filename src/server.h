@@ -622,9 +622,10 @@ pre code{background:transparent;padding:0}
         &#128196;<input type="file" id="txtfile" accept=".txt,.md,.csv,.json,.xml,.py,.js,.ts,.cpp,.h,.c,.java,.go,.rs,.rb,.sh,.yaml,.yml,.toml,.ini,.log,.rst,.tex" style="display:none" onchange="attachFile(this)">
       </label>
       <textarea id="inp" rows="1" data-i18n-ph="msg_ph" placeholder="Message&#8230; (Enter to send, Shift+Enter for newline)"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}autoH(this)"></textarea>
+        onkeydown="if(!busy&&event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}autoH(this)"></textarea>
       <button class="ic-btn send-btn" id="sendbtn" onclick="send()" title="Send">&#10148;</button>
     </div>
+  </div>
   </div>
 <script>
 // ---- i18n translations ----
@@ -896,6 +897,7 @@ async function send(){
   addMsg('user',esc(displayText));
 
   busy=true;document.getElementById('sendbtn').disabled=true;
+  document.getElementById('inp').disabled=true;
   var th=addThinking();
 
   var sys=document.getElementById('sys').value.trim();
@@ -914,14 +916,15 @@ async function send(){
   var hdrs={'Content-Type':'application/json'};
   if(key)hdrs['Authorization']='Bearer '+key;
 
+  var bubble;
   try{
     var r=await fetch((document.getElementById('srvurl').value||BASE)+'/v1/chat/completions',
       {method:'POST',headers:hdrs,body:JSON.stringify(payload)});
     th.remove();
-    if(!r.ok){toast('HTTP '+r.status+': '+(await r.text()));busy=false;document.getElementById('sendbtn').disabled=false;return;}
+    if(!r.ok){toast('HTTP '+r.status+': '+(await r.text()));busy=false;document.getElementById('sendbtn').disabled=false;document.getElementById('inp').disabled=false;return;}
 
     var aiText='';var toolCalls=[];
-    var bubble=addMsg('assistant','');
+    bubble=addMsg('assistant','');
     history.push({role:'assistant',content:''});
 
     var reader=r.body.getReader();var dec=new TextDecoder();var buf='';
@@ -944,8 +947,17 @@ async function send(){
     }
     history[history.length-1].content=aiText;
     if(toolCalls.length>0)renderToolCalls(toolCalls,bubble);
-  }catch(e){th.remove();toast('Error: '+e.message);}
-  busy=false;document.getElementById('sendbtn').disabled=false;
+  }catch(e){
+    if(th.parentNode)th.remove();
+    // Remove orphaned empty assistant bubble and history entry if stream never completed
+    if(bubble&&bubble.parentNode){
+      var msgDiv=bubble.parentNode;
+      if(msgDiv.parentNode)msgDiv.parentNode.removeChild(msgDiv);
+    }
+    if(history.length>0&&history[history.length-1].role==='assistant'&&history[history.length-1].content==='')history.pop();
+    toast('Error: '+e.message);
+  }
+  busy=false;document.getElementById('sendbtn').disabled=false;document.getElementById('inp').disabled=false;
 }
 // ---- UPnP toggle ----
 async function toggleUpnp(enabled){
@@ -1526,7 +1538,26 @@ static void handle_client(socket_t client_fd, Model& model, Sampler& sampler,
 
     // Handle CORS preflight
     if (method == "OPTIONS") {
-        http_send(client_fd, "204 No Content", "text/plain", "");
+        std::string resp =
+            "HTTP/1.1 204 No Content\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        size_t sent = 0;
+        while (sent < resp.size()) {
+#ifdef _WIN32
+            int n = send(client_fd, resp.c_str() + sent,
+                         static_cast<int>(resp.size() - sent), 0);
+#else
+            ssize_t n = send(client_fd, resp.c_str() + sent,
+                             resp.size() - sent, 0);
+#endif
+            if (n <= 0) break;
+            sent += static_cast<size_t>(n);
+        }
         CLOSE_SOCKET(client_fd);
         return;
     }
