@@ -1,4 +1,4 @@
-// GPU (CUDA) tests for llm.cpp kernel operations.
+// GPU (CUDA) tests for swllm.cpp kernel operations.
 // Compiled only when LLM_CUDA=ON.  Each test verifies that the CUDA kernel
 // produces results consistent with the reference CPU implementation.
 
