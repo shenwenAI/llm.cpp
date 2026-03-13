@@ -1,4 +1,5 @@
 # swllm.cpp
+You can join our 点击链接加入群聊【shenwenai】：https://qun.qq.com/universal-share/share?ac=1&authKey=bwq44dXhf71MkZTmDpIoyQX9X%2F%2FxGaBSi8jALN8Bjp6Pp%2BCdXgYWT6XLFkibFsGS&busi_data=eyJncm91cENvZGUiOiIxMDg3Nzk2NzEzIiwidG9rZW4iOiI1b3hoVnRaNzJmSjI3L3J0V3RIYVpqWDRvUkRqSDJsNHJEcXA5RG1sMExITTZ1c2dLVlJyZWdUeFlwa1NTd1VSIiwidWluIjoiMzk5NTMzNjI4MSJ9&data=J9QdHhnKcfaUfD71LIoszAueYGjR_yyTE0Jph3nvzYdWJvVQeDYpzrplFVbLdelDmi4Kpf8lx4MZ7RP4-GSu_A&svctype=4&tempid=h5_group_info
 
 A lightweight C++ LLM inference engine, similar to [llama.cpp](https://github.com/ggerganov/llama.cpp). Loads GGUF model files **or HuggingFace SafeTensors directly** and runs text generation on **CPU** (with OpenMP) or **GPU** (with CUDA).
 You can sponsor us on https://shenwen.578388.xyz/payus.html Thank you.
